@@ -127,6 +127,8 @@ export default function Dashboard({ session }) {
   const [tab,  setTab]      = useState("table");
   const [toast, setToast]   = useState(null);
   const [filterStatus, setFS] = useState("All");
+  const [filterType, setFT]   = useState("All");
+  const [filterPri, setFP]    = useState("All");
   const [sortK, setSortK]   = useState("id");
   const [sortD, setSortD]   = useState("desc");
   const [q, setQ]           = useState("");
@@ -212,6 +214,8 @@ export default function Dashboard({ session }) {
   // ── Filter / Sort ─────────────────────────────────────────────────────────
   const visible = jobs
     .filter(j=>filterStatus==="All"||j.status===filterStatus)
+    .filter(j=>filterType==="All"||j.type===filterType)
+    .filter(j=>filterPri==="All"||j.priority===filterPri)
     .filter(j=>!q||(j.title+j.company+j.skills+j.location).toLowerCase().includes(q.toLowerCase()))
     .sort((a,b)=>{
       let av=sortK==="id"?a.id:(a[sortK]??""), bv=sortK==="id"?b.id:(b[sortK]??"");
@@ -296,7 +300,33 @@ export default function Dashboard({ session }) {
             user_id: session.user.id
           };
         });
-        supabase.from('jobs').insert(mapped).then(({error})=>{ if(!error){ fetchJobs(); notify("Imported Excel Data ✓"); }else notify(error.message, "err"); });
+
+        const newJobs = [];
+        let skipped = 0;
+        mapped.forEach(r => {
+          const isDup = jobs.some(j => j.title.toLowerCase() === r.title.toLowerCase() && j.company.toLowerCase() === r.company.toLowerCase());
+          if (isDup) skipped++;
+          else newJobs.push(r);
+        });
+
+        if (newJobs.length === 0) {
+          notify(`Import ignored — ${skipped} duplicate jobs skipped.`);
+          return;
+        }
+
+        const chunkSize = 500;
+        const doBatches = async () => {
+          let hasErrs = false;
+          let msg = "";
+          for (let i = 0; i < newJobs.length; i += chunkSize) {
+            const chunk = newJobs.slice(i, i + chunkSize);
+            const { error } = await supabase.from('jobs').insert(chunk);
+            if (error) { hasErrs = true; msg = error.message; break; }
+          }
+          if (!hasErrs) { fetchJobs(); notify(`Imported ${newJobs.length} new jobs ✓ ${skipped > 0 ? `(${skipped} duplicates skipped)` : ''}`); }
+          else notify(msg, "err");
+        };
+        doBatches();
       } catch { notify("Import failed — check file format","err"); }
     };
     reader.readAsArrayBuffer(file); e.target.value="";
@@ -365,14 +395,27 @@ export default function Dashboard({ session }) {
         </div>
       )}
 
-      {/* STATUS FILTER */}
+      {/* STATUS FILTER & ADVANCED FILTERS */}
       <div style={{background:"#060d1b",borderBottom:"1px solid #0a1628",padding:"9px 24px"}}>
-        <div style={{maxWidth:1440,margin:"0 auto",display:"flex",gap:8,flexWrap:"wrap",alignItems:"center"}}>
-          {[["All",jobs.length,"#60a5fa"],...STATUS.map(s=>[s,stats[s],SC[s].dot])].map(([s,c,col])=>(
-            <button key={s} onClick={()=>setFS(s)} style={{background:filterStatus===s?"#0a1628":"transparent",border:`1px solid ${filterStatus===s?col:"#1e293b"}`,borderRadius:8,padding:"4px 12px",color:filterStatus===s?"#f1f5f9":"#334155",fontSize:11,fontWeight:600,cursor:"pointer",transition:"all .15s"}}>
-              {s} <span style={{color:col,marginLeft:3}}>{c}</span>
-            </button>
-          ))}
+        <div style={{maxWidth:1440,margin:"0 auto",display:"flex",gap:16,flexWrap:"wrap",alignItems:"center",justifyContent:"space-between"}}>
+          <div style={{display:"flex",gap:8,flexWrap:"wrap",alignItems:"center"}}>
+            {[["All",jobs.length,"#60a5fa"],...STATUS.map(s=>[s,stats[s],SC[s].dot])].map(([s,c,col])=>(
+              <button key={s} onClick={()=>setFS(s)} style={{background:filterStatus===s?"#0a1628":"transparent",border:`1px solid ${filterStatus===s?col:"#1e293b"}`,borderRadius:8,padding:"4px 12px",color:filterStatus===s?"#f1f5f9":"#334155",fontSize:11,fontWeight:600,cursor:"pointer",transition:"all .15s"}}>
+                {s} <span style={{color:col,marginLeft:3}}>{c}</span>
+              </button>
+            ))}
+          </div>
+          <div style={{display:"flex",gap:10,flexWrap:"wrap",alignItems:"center"}}>
+            <span style={{color:"#475569",fontSize:11,fontWeight:700}}>FILTERS</span>
+            <select value={filterType} onChange={e=>setFT(e.target.value)} style={{background:"#0a111e",border:"1px solid #1e293b",borderRadius:8,padding:"5px 10px",color:"#94a3b8",fontSize:11,outline:"none",cursor:"pointer"}}>
+              <option value="All">All Types</option>
+              {TYPES.map(t=><option key={t} value={t}>{t}</option>)}
+            </select>
+            <select value={filterPri} onChange={e=>setFP(e.target.value)} style={{background:"#0a111e",border:"1px solid #1e293b",borderRadius:8,padding:"5px 10px",color:"#94a3b8",fontSize:11,outline:"none",cursor:"pointer"}}>
+              <option value="All">All Priorities</option>
+              {["High","Medium","Low"].map(p=><option key={p} value={p}>{p}</option>)}
+            </select>
+          </div>
         </div>
       </div>
 
