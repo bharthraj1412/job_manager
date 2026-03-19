@@ -195,6 +195,7 @@ export default function Dashboard({ session }) {
   const [sr, setSr]       = useState([]);
   const [sLoad, setSLoad] = useState(false);
   const [sErr,  setSErr]  = useState("");
+  const [sPage, setSPage] = useState(1);
 
   // prep / cover
   const [prepOut, setPrepOut]     = useState(""); const [prepLoad, setPrepLoad] = useState(false);
@@ -265,40 +266,57 @@ export default function Dashboard({ session }) {
   // ── Job Search (Adzuna Live Jobs) ─────────────────────────────────────────
   async function doSearch() {
     if(!sq.trim()) return;
-    setSLoad(true); setSr([]); setSErr("");
+    setSLoad(true); setSr([]); setSErr(""); setSPage(1);
     if (!adzunaId || !adzunaKey) {
       setSErr("Adzuna App ID and Key required — add them in ⚙️ Settings.");
       setSLoad(false); return;
     }
     try {
-      const url = `https://api.adzuna.com/v1/api/jobs/in/search/1?app_id=${adzunaId}&app_key=${adzunaKey}&results_per_page=10&what=${encodeURIComponent(sq)}&content-type=application/json`;
+      const url = `https://api.adzuna.com/v1/api/jobs/in/search/1?app_id=${adzunaId}&app_key=${adzunaKey}&results_per_page=50&what=${encodeURIComponent(sq)}&content-type=application/json`;
       const res = await fetch(url);
-      if (!res.ok) {
-        const errText = await res.text();
-        throw new Error(`Adzuna error ${res.status}: ${errText}`);
-      }
+      if (!res.ok) throw new Error(`Adzuna error ${res.status}`);
       const data = await res.json();
       if (!data.results?.length) {
-        setSErr("No jobs found on Adzuna — try different keywords (e.g. \"software engineer\", \"data analyst\").");
+        setSErr("No jobs found — try different keywords.");
         setSLoad(false); return;
       }
-      setSr(data.results.map(j => ({
-        title:       j.title,
-        company:     j.company?.display_name || "Unknown",
-        location:    j.location?.display_name || "",
-        type:        j.contract_time === "part_time" ? "Part-time" : "Full-time",
-        salary:      j.salary_min
-                       ? `₹${Math.round(j.salary_min).toLocaleString()} – ₹${Math.round(j.salary_max || j.salary_min).toLocaleString()}`
-                       : "Not disclosed",
-        skills:      "",
-        source:      "Adzuna",
-        applylink:   j.redirect_url || "",
-        description: j.description ? j.description.slice(0, 150) + "…" : "",
-      })));
-    } catch(err) {
-      setSErr(err.message);
-    }
+      setSr(mapAdzuna(data.results));
+    } catch(err) { setSErr(err.message); }
     setSLoad(false);
+  }
+
+  async function doSearchMore() {
+    const nextPage = sPage + 1;
+    setSLoad(true);
+    try {
+      const url = `https://api.adzuna.com/v1/api/jobs/in/search/${nextPage}?app_id=${adzunaId}&app_key=${adzunaKey}&results_per_page=50&what=${encodeURIComponent(sq)}&content-type=application/json`;
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`Adzuna error ${res.status}`);
+      const data = await res.json();
+      if (!data.results?.length) {
+        setSErr("No more results found.");
+      } else {
+        setSr(prev => [...prev, ...mapAdzuna(data.results)]);
+        setSPage(nextPage);
+      }
+    } catch(err) { setSErr(err.message); }
+    setSLoad(false);
+  }
+
+  function mapAdzuna(results) {
+    return results.map(j => ({
+      title:       j.title,
+      company:     j.company?.display_name || "Unknown",
+      location:    j.location?.display_name || "",
+      type:        j.contract_time === "part_time" ? "Part-time" : "Full-time",
+      salary:      j.salary_min
+                     ? `₹${Math.round(j.salary_min).toLocaleString()} – ₹${Math.round(j.salary_max || j.salary_min).toLocaleString()}`
+                     : "Not disclosed",
+      skills:      "",
+      source:      "Adzuna",
+      applylink:   j.redirect_url || "",
+      description: j.description ? j.description.slice(0, 150) + "…" : "",
+    }));
   }
 
   // ── AI Interview Prep ─────────────────────────────────────────────────────
@@ -1034,16 +1052,32 @@ export default function Dashboard({ session }) {
                 {sr.map((r,i)=>(
                   <div key={i} style={{background:"#0a111e",border:"1px solid #1e293b",borderRadius:10,padding:12,display:"flex",justifyContent:"space-between",gap:10,alignItems:"flex-start"}}>
                     <div style={{flex:1}}>
-                      <div style={{color:"#e2e8f0",fontWeight:600,fontSize:13}}>{r.title}</div>
+                      <div style={{color:"#e2e8f0",fontWeight:600,fontSize:13}}>
+                        {r.applylink
+                          ? <a href={r.applylink} target="_blank" rel="noreferrer" style={{color:"#60a5fa",textDecoration:"none"}}>{r.title}</a>
+                          : r.title}
+                      </div>
                       <div style={{color:"#60a5fa",fontSize:12,margin:"3px 0"}}>{r.company} · {r.location}</div>
                       <div style={{color:"#334155",fontSize:11}}>{r.salary} · {r.type} · via {r.source}</div>
-                      {r.skills&&<div style={{color:"#475569",fontSize:11,marginTop:3}}>🛠 {r.skills}</div>}
                       {r.description&&<div style={{color:"#1e293b",fontSize:11,marginTop:3}}>{r.description}</div>}
                     </div>
                     <Btn v="grn" onClick={()=>addFromSearch(r)} sx={{flexShrink:0,padding:"5px 10px",fontSize:11}}>+ Add</Btn>
                   </div>
                 ))}
               </div>
+
+              {/* Load More button */}
+              <button onClick={doSearchMore} disabled={sLoad} style={{
+                width:"100%",marginTop:10,
+                background:"rgba(6,182,212,0.08)",
+                border:"1px dashed rgba(6,182,212,0.3)",
+                color:"#06b6d4",borderRadius:10,padding:"10px",
+                cursor:sLoad?"not-allowed":"pointer",
+                fontFamily:"inherit",fontSize:13,fontWeight:600,
+                opacity:sLoad?0.5:1
+              }}>
+                {sLoad ? "Loading…" : `⬇ Load More (page ${sPage + 1})`}
+              </button>
             </div>
           )}
         </Modal>
