@@ -34,7 +34,7 @@ const SEED = [
 const fmtDate = d => d ? new Date(d).toLocaleDateString("en-IN",{day:"numeric",month:"short"}) : "—";
 const daysDiff = d => d ? Math.ceil((new Date(d)-new Date())/86400000) : null;
 
-async function callGemini(prompt, sysprompt="", apiKey="") {
+async function callGemini(prompt, sysprompt="", apiKey="", modelName="gemini-3-pro-high", proxyUrl="http://localhost:8045/v1/chat/completions") {
   if (!apiKey) throw new Error("API key is required. Please add it in Settings.");
   
   const messages = [];
@@ -42,12 +42,12 @@ async function callGemini(prompt, sysprompt="", apiKey="") {
   messages.push({ role: "user", content: prompt });
 
   const body = {
-    model: "gemini-3-pro-high",
+    model: modelName,
     messages: messages,
     temperature: 0.2
   };
 
-  const r = await fetch("http://localhost:8045/v1/chat/completions", {
+  const r = await fetch(proxyUrl, {
     method:"POST", 
     headers:{
       "Content-Type":"application/json",
@@ -184,10 +184,14 @@ export default function Dashboard({ session }) {
 
   const [geminiKey, setGeminiKey] = useState(() => localStorage.getItem("geminiKey") || "");
   const [clientId, setClientId] = useState(() => localStorage.getItem("googleClientId") || "531663408839-fd70j89efgbtg26uadtdob7plvbh7nta.apps.googleusercontent.com");
+  const [aiModel, setAiModel] = useState(() => localStorage.getItem("aiModel") || "gemini-3-pro-high");
+  const [proxyUrl, setProxyUrl] = useState(() => localStorage.getItem("proxyUrl") || "http://localhost:8045/v1/chat/completions");
 
   function saveSettings() {
     localStorage.setItem("geminiKey", geminiKey);
     localStorage.setItem("googleClientId", clientId);
+    localStorage.setItem("aiModel", aiModel);
+    localStorage.setItem("proxyUrl", proxyUrl);
     notify("Settings saved ✓");
     setShowSettings(false);
   }
@@ -273,7 +277,7 @@ export default function Dashboard({ session }) {
     try {
       const sys = `You are a job search assistant. Generate realistic, plausible job listings based on what's available on LinkedIn, Naukri, Indeed, Internshala, and company career pages. Always return ONLY a valid JSON array. No markdown, no explanation, no preamble.`;
       const prompt = `Find 6 realistic job listings matching this search: "${sq}"\nReturn a JSON array where each object has exactly these keys: title, company, location, type, salary, skills, source, applylink, description.\nReturn ONLY the JSON array.`;
-      const text = await callGemini(prompt, sys, geminiKey);
+      const text = await callGemini(prompt, sys, geminiKey, aiModel, proxyUrl);
       const clean = text.replace(/```json|```/g,"").trim();
       const s=clean.indexOf("["), e=clean.lastIndexOf("]");
       if(s===-1) throw new Error("No JSON array found");
@@ -291,7 +295,7 @@ export default function Dashboard({ session }) {
     try {
       const t = await callGemini(
         `Create a concise interview prep guide for "${job.title}" at ${job.company}. Include: 5 technical questions with answer hints (skills: ${job.skills}), 3 STAR behavioral questions, 2 questions to ask them, 3 things to research about ${job.company}. Ensure clear headers.`,
-        "You are an expert career coach. Provide specific, actionable interview preparation.", geminiKey
+        "You are an expert career coach. Provide specific, actionable interview preparation.", geminiKey, aiModel, proxyUrl
       );
       setPrepOut(t);
     } catch(err) { setPrepOut("Error: " + err.message); }
@@ -305,7 +309,7 @@ export default function Dashboard({ session }) {
     try {
       const t = await callGemini(
         `Write a compelling 3-paragraph cover letter for: Role: ${job.title} at ${job.company} (${job.location}). Skills needed: ${job.skills}. Candidate background: ${bio||"Recent graduate"}. Be specific, genuine. No clichés.`,
-        "You are a professional career writer. Write natural, tailored cover letters.", geminiKey
+        "You are a professional career writer. Write natural, tailored cover letters.", geminiKey, aiModel, proxyUrl
       );
       setCoverOut(t);
     } catch(err) { setCoverOut("Error: " + err.message); }
@@ -437,7 +441,7 @@ ${JSON.stringify(payload)}
 
 Return JSON array where objects have: company, jobTitle, status (Applied, Screening, Interview Scheduled, Interview Done, Offer Received, Rejected, Pending), interviewDate, interviewTime, interviewType, sender, date, snippet, subject. ONLY JSON array.`;
       
-      const text = await callGemini(prompt, "You are a job application analyzer. Always return valid JSON arrays only.", geminiKey);
+      const text = await callGemini(prompt, "You are a job application analyzer. Always return valid JSON arrays only.", geminiKey, aiModel, proxyUrl);
       const clean = text.replace(/```json|```/g,"").trim();
       const match = clean.match(/\[[\s\S]*\]/);
       const emails = match ? JSON.parse(match[0]) : [];
@@ -965,9 +969,11 @@ Return JSON array where objects have: company, jobTitle, status (Applied, Screen
 
       {showSettings&&(
         <Modal title="⚙️ AI & Integrations Settings" onClose={()=>setShowSettings(false)}>
-          <F label="Gemini API Key *"><Inp type="password" value={geminiKey} onChange={e=>setGeminiKey(e.target.value)} placeholder="AIStudio API Key..."/></F>
+          <F label="API / Proxy Key *"><Inp type="password" value={geminiKey} onChange={e=>setGeminiKey(e.target.value)} placeholder="sk-..."/></F>
+          <F label="Proxy Base URL"><Inp value={proxyUrl} onChange={e=>setProxyUrl(e.target.value)} placeholder="http://10.151.72.225:8045/v1/chat/completions"/></F>
+          <F label="AI Model Name"><Inp value={aiModel} onChange={e=>setAiModel(e.target.value)} placeholder="gemini-3-pro-high"/></F>
           <F label="Google Client ID (optional, for Gmail Scanner)"><Inp value={clientId} onChange={e=>setClientId(e.target.value)} placeholder="...apps.googleusercontent.com"/></F>
-          <div style={{color:"#94a3b8", fontSize:11, marginBottom:16, lineHeight:1.5}}>* Gemini API key is required for AI Search, Interview Prep, Cover Letter, and Gmail parsing natively without MCP.</div>
+          <div style={{color:"#94a3b8", fontSize:11, marginBottom:16, lineHeight:1.5}}>* AI Key and config are saved securely entirely in your browser.</div>
           <Btn v="pri" onClick={saveSettings} sx={{width:"100%",justifyContent:"center",padding:"11px"}}>Save Settings</Btn>
         </Modal>
       )}
