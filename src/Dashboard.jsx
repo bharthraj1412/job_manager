@@ -34,6 +34,37 @@ const SEED = [
 const fmtDate = d => d ? new Date(d).toLocaleDateString("en-IN",{day:"numeric",month:"short"}) : "—";
 const daysDiff = d => d ? Math.ceil((new Date(d)-new Date())/86400000) : null;
 
+async function callGemini(prompt, sysprompt="", apiKey="") {
+  if (!apiKey) throw new Error("API key is required. Please add it in Settings.");
+  
+  const messages = [];
+  if (sysprompt) messages.push({ role: "system", content: sysprompt });
+  messages.push({ role: "user", content: prompt });
+
+  const body = {
+    model: "gemini-3-pro-high",
+    messages: messages,
+    temperature: 0.2
+  };
+
+  const r = await fetch("http://localhost:8045/v1/chat/completions", {
+    method:"POST", 
+    headers:{
+      "Content-Type":"application/json",
+      "Authorization": `Bearer ${apiKey}`
+    }, 
+    body:JSON.stringify(body)
+  });
+  
+  if (!r.ok) {
+    const errorText = await r.text();
+    throw new Error(`API Error: ${r.status} ${errorText}`);
+  }
+  const d = await r.json();
+  if (d.error) throw new Error(d.error.message);
+  return d.choices?.[0]?.message?.content || "";
+}
+
 // AI Interfacing Decoupled
 
 // ── Atoms ─────────────────────────────────────────────────────────────────────
@@ -149,6 +180,17 @@ export default function Dashboard({ session }) {
   const [showPrep,   setShowPrep]   = useState(null);
   const [showCover,  setShowCover]  = useState(null);
   const [showDetail, setShowDetail] = useState(null);
+  const [showSettings, setShowSettings] = useState(false);
+
+  const [geminiKey, setGeminiKey] = useState(() => localStorage.getItem("geminiKey") || "");
+  const [clientId, setClientId] = useState(() => localStorage.getItem("googleClientId") || "531663408839-fd70j89efgbtg26uadtdob7plvbh7nta.apps.googleusercontent.com");
+
+  function saveSettings() {
+    localStorage.setItem("geminiKey", geminiKey);
+    localStorage.setItem("googleClientId", clientId);
+    notify("Settings saved ✓");
+    setShowSettings(false);
+  }
 
   const blank = {title:"",company:"",location:"",type:"Full-time",salary:"",skills:"",source:"",applylink:"",status:"Bookmarked",applieddate:"",deadline:"",notes:"",priority:"Medium"};
   const [form, setForm] = useState(blank);
@@ -225,16 +267,201 @@ export default function Dashboard({ session }) {
   const sIcon=k=>sortK===k?(sortD==="asc"?"↑":"↓"):<span style={{opacity:.2}}>↕</span>;
 
   // ── AI Job Search (FIXED) ─────────────────────────────────────────────────
-  async function doSearch() { setSLoad(true); setTimeout(() => { setSLoad(false); setSErr("AI feature disconnected."); }, 500); }
+  async function doSearch() {
+    if(!sq.trim())return;
+    setSLoad(true); setSr([]); setSErr("");
+    try {
+      const sys = `You are a job search assistant. Generate realistic, plausible job listings based on what's available on LinkedIn, Naukri, Indeed, Internshala, and company career pages. Always return ONLY a valid JSON array. No markdown, no explanation, no preamble.`;
+      const prompt = `Find 6 realistic job listings matching this search: "${sq}"\nReturn a JSON array where each object has exactly these keys: title, company, location, type, salary, skills, source, applylink, description.\nReturn ONLY the JSON array.`;
+      const text = await callGemini(prompt, sys, geminiKey);
+      const clean = text.replace(/```json|```/g,"").trim();
+      const s=clean.indexOf("["), e=clean.lastIndexOf("]");
+      if(s===-1) throw new Error("No JSON array found");
+      setSr(JSON.parse(clean.slice(s,e+1)));
+    } catch(err) {
+      setSErr(err.message + " (Check API Key in Settings)");
+    }
+    setSLoad(false);
+  }
 
   // ── AI Interview Prep ─────────────────────────────────────────────────────
-  async function doPrep() { setPrepLoad(true); setTimeout(() => { setPrepLoad(false); setPrepOut("AI feature disconnected."); }, 500); }
+  async function doPrep(job) {
+    if(!job) return;
+    setPrepLoad(true); setPrepOut(""); setShowPrep(job);
+    try {
+      const t = await callGemini(
+        `Create a concise interview prep guide for "${job.title}" at ${job.company}. Include: 5 technical questions with answer hints (skills: ${job.skills}), 3 STAR behavioral questions, 2 questions to ask them, 3 things to research about ${job.company}. Ensure clear headers.`,
+        "You are an expert career coach. Provide specific, actionable interview preparation.", geminiKey
+      );
+      setPrepOut(t);
+    } catch(err) { setPrepOut("Error: " + err.message); }
+    setPrepLoad(false);
+  }
 
   // ── AI Cover Letter ───────────────────────────────────────────────────────
-  async function doCover() { setCoverLoad(true); setTimeout(() => { setCoverLoad(false); setCoverOut("AI feature disconnected."); }, 500); }
+  async function doCover(job) {
+    if(!job) return;
+    setCoverLoad(true); setCoverOut(""); setShowCover(job);
+    try {
+      const t = await callGemini(
+        `Write a compelling 3-paragraph cover letter for: Role: ${job.title} at ${job.company} (${job.location}). Skills needed: ${job.skills}. Candidate background: ${bio||"Recent graduate"}. Be specific, genuine. No clichés.`,
+        "You are a professional career writer. Write natural, tailored cover letters.", geminiKey
+      );
+      setCoverOut(t);
+    } catch(err) { setCoverOut("Error: " + err.message); }
+    setCoverLoad(false);
+  }
 
   // ── Gmail Scanner ─────────────────────────────────────────────────────────
-  async function startGmailScan() { setGmailLoading(true); setTimeout(() => { setGmailLoading(false); setGmailStatus({msg:"MCP Gmail module disconnected.",type:"error"}); }, 500); }
+  async function loadGis() {
+    return new Promise((resolve, reject) => {
+      if (window.google?.accounts?.oauth2) return resolve(window.google.accounts.oauth2);
+      const script = document.createElement("script");
+      script.src = "https://accounts.google.com/gsi/client";
+      script.async = true; script.defer = true;
+      script.onload = () => resolve(window.google.accounts.oauth2);
+      script.onerror = reject;
+      document.body.appendChild(script);
+    });
+  }
+
+  async function getGoogleToken(scope) {
+    return new Promise(async (resolve, reject) => {
+      if(!clientId) return reject(new Error("Google Client ID needed in Settings."));
+      const gis = await loadGis();
+      const tokenClient = gis.initTokenClient({
+        client_id: clientId,
+        scope: scope,
+        callback: (resp) => {
+          if (resp.error) reject(new Error(resp.error));
+          else resolve(resp.access_token);
+        }
+      });
+      tokenClient.requestAccessToken({prompt: 'consent'});
+    });
+  }
+
+  async function addToCalendar(job) {
+    const dateTimeStr = prompt(`Enter interview date/time for ${job.company} (e.g. 2026-03-25T14:00) or leave blank for All-Day on Deadline:`, job.deadline ? `${job.deadline}T09:00` : "");
+    if(dateTimeStr === null) return;
+    try {
+      notify("Requesting Calendar access...", "ok");
+      const token = await getGoogleToken("https://www.googleapis.com/auth/calendar.events");
+      notify("Creating calendar event...", "ok");
+      const isAllDay = dateTimeStr && !dateTimeStr.includes("T");
+      const startObj = isAllDay ? { date: dateTimeStr } : { dateTime: dateTimeStr ? new Date(dateTimeStr).toISOString() : new Date().toISOString() };
+      const endObj = isAllDay ? { date: dateTimeStr } : { dateTime: dateTimeStr ? new Date(new Date(dateTimeStr).getTime() + 60*60*1000).toISOString() : new Date(Date.now()+60*60*1000).toISOString() };
+      const event = { summary: `Interview: ${job.company} - ${job.title}`, description: `Role: ${job.title}\\nLink: ${job.applylink||"none"}\\nNotes: ${job.notes||"none"}`, start: startObj, end: endObj };
+      const res = await fetch("https://www.googleapis.com/calendar/v3/calendars/primary/events", { method: "POST", headers: { "Authorization": `Bearer ${token}`, "Content-Type": "application/json" }, body: JSON.stringify(event) });
+      if(!res.ok) throw new Error("Failed to create event");
+      notify("Added to Google Calendar ✓");
+    } catch(err) { notify("Calendar error: " + err.message, "err"); }
+  }
+
+  async function saveToDrive(filename, content) {
+    try {
+      notify("Requesting Drive access...", "ok");
+      const token = await getGoogleToken("https://www.googleapis.com/auth/drive.file");
+      notify("Saving to Drive...", "ok");
+      const boundary = "-------314159265358979323846";
+      const delimiter = "\\r\\n--" + boundary + "\\r\\n";
+      const close_delim = "\\r\\n--" + boundary + "--";
+      const metadata = { name: filename, mimeType: "text/plain" };
+      const multipartRequestBody = delimiter + "Content-Type: application/json; charset=UTF-8\\r\\n\\r\\n" + JSON.stringify(metadata) + delimiter + "Content-Type: text/plain; charset=UTF-8\\r\\n\\r\\n" + content + close_delim;
+      const res = await fetch("https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart", { method: "POST", headers: { "Authorization": `Bearer ${token}`, "Content-Type": `multipart/related; boundary="${boundary}"` }, body: multipartRequestBody });
+      if(!res.ok) throw new Error("Failed to save to Drive");
+      notify(`Saved "${filename}" to Google Drive ✓`);
+    } catch(err) { notify("Drive error: " + err.message, "err"); }
+  }
+
+  async function startGmailScan() {
+    setGmailLoading(true); setGmailEmails([]); setGmailStats(null);
+    setGmailStatus({msg:"Authorizing with Google...",type:"loading"});
+    try {
+      if(!clientId) throw new Error("Google Client ID needed in Settings.");
+      const gis = await loadGis();
+      const tokenClient = gis.initTokenClient({
+        client_id: clientId,
+        scope: "https://www.googleapis.com/auth/gmail.readonly",
+        callback: async (resp) => {
+          if (resp.error) {
+            setGmailStatus({msg: "Google auth error: " + resp.error, type: "error"});
+            setGmailLoading(false);
+            return;
+          }
+          await fetchAndParseEmails(resp.access_token);
+        }
+      });
+      tokenClient.requestAccessToken({prompt: 'consent'});
+    } catch(err) {
+      setGmailStatus({msg:"Error: "+err.message, type:"error"});
+      setGmailLoading(false);
+    }
+  }
+
+  async function fetchAndParseEmails(token) {
+    try {
+      setGmailStatus({msg:"Fetching recent emails via Gmail API...",type:"loading"});
+      let baseQ = `(subject:interview OR subject:offer OR subject:application OR subject:referred OR subject:rejected OR subject:"assessment" OR subject:"next steps" OR subject:"position") newer_than:${gmailDays}d`;
+      if (gmailExtra) baseQ += ` ${gmailExtra}`;
+      
+      const res = await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/messages?q=${encodeURIComponent(baseQ)}&maxResults=35`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      const data = await res.json();
+      if(!data.messages || data.messages.length===0) {
+        setGmailStatus({msg:"✓ Scan complete — no job-related emails found.",type:"success"});
+        setGmailLoading(false); return;
+      }
+      
+      setGmailStatus({msg:`Reading details of ${data.messages.length} matched emails...`,type:"loading"});
+      const batch = await Promise.all(data.messages.map(m => 
+        fetch(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${m.id}?format=metadata&metadataHeaders=Subject&metadataHeaders=From&metadataHeaders=Date`, {
+          headers: { Authorization: `Bearer ${token}` }
+        }).then(r=>r.json())
+      ));
+      
+      const payload = batch.map(d => {
+        let subject="", sender="", date="";
+        d.payload?.headers?.forEach(h => {
+          if(h.name.toLowerCase()==="subject") subject = h.value;
+          if(h.name.toLowerCase()==="from") sender = h.value;
+          if(h.name.toLowerCase()==="date") date = h.value;
+        });
+        return { subject, sender, date, snippet: d.snippet };
+      });
+      
+      setGmailStatus({msg:"Analyzing emails with Gemini...",type:"loading"});
+      const prompt = `Analyze these emails and return a JSON array of job-related emails:
+${JSON.stringify(payload)}
+
+Return JSON array where objects have: company, jobTitle, status (Applied, Screening, Interview Scheduled, Interview Done, Offer Received, Rejected, Pending), interviewDate, interviewTime, interviewType, sender, date, snippet, subject. ONLY JSON array.`;
+      
+      const text = await callGemini(prompt, "You are a job application analyzer. Always return valid JSON arrays only.", geminiKey);
+      const clean = text.replace(/```json|```/g,"").trim();
+      const match = clean.match(/\[[\s\S]*\]/);
+      const emails = match ? JSON.parse(match[0]) : [];
+      
+      if(emails.length===0) {
+        setGmailStatus({msg:"✓ Scan complete — no exact matches found in those emails.",type:"success"});
+      } else {
+        setGmailEmails(emails);
+        const stats = {
+          total:emails.length, applied:emails.filter(e=>e.status==="Applied").length,
+          interview:emails.filter(e=>e.status.includes("Interview")).length,
+          offer:emails.filter(e=>e.status.includes("Offer")||e.status==="Accepted").length,
+          rejected:emails.filter(e=>e.status==="Rejected").length,
+          pending:emails.filter(e=>e.status==="Pending").length,
+        };
+        setGmailStats(stats);
+        setGmailRows(emails.map((e,i)=>({id:i+1,date:e.date?e.date.split("T")[0]:"",company:e.company||"",jobTitle:e.jobTitle||"",status:e.status||"Applied",interviewDate:e.interviewDate||"",interviewTime:e.interviewTime||"",interviewType:e.interviewType||"",notes:e.snippet||""})));
+        setGmailStatus({msg:`✓ Found ${emails.length} job-related emails — review below!`,type:"success"});
+      }
+    } catch(err) {
+      setGmailStatus({msg:"Error parsing: " + err.message, type:"error"});
+    }
+    setGmailLoading(false);
+  }
 
   // ── Excel ─────────────────────────────────────────────────────────────────
   function exportXLSX() {
@@ -377,6 +604,7 @@ export default function Dashboard({ session }) {
             <p style={{color:"#1e293b",fontSize:11,margin:"0 0 0 31px"}}>Search · Track · Gmail · Export</p>
           </div>
           <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+            <Btn onClick={() => setShowSettings(true)}>⚙️ Settings</Btn>
             <Btn onClick={() => supabase.auth.signOut()} v="red">⏏️ Logout</Btn>
             <Btn onClick={openAdd}>＋ Add Job</Btn>
             <Btn onClick={()=>fileRef.current.click()}>📂 Import</Btn>
@@ -735,6 +963,15 @@ export default function Dashboard({ session }) {
 
       {/* ═══ MODALS ═══ */}
 
+      {showSettings&&(
+        <Modal title="⚙️ AI & Integrations Settings" onClose={()=>setShowSettings(false)}>
+          <F label="Gemini API Key *"><Inp type="password" value={geminiKey} onChange={e=>setGeminiKey(e.target.value)} placeholder="AIStudio API Key..."/></F>
+          <F label="Google Client ID (optional, for Gmail Scanner)"><Inp value={clientId} onChange={e=>setClientId(e.target.value)} placeholder="...apps.googleusercontent.com"/></F>
+          <div style={{color:"#94a3b8", fontSize:11, marginBottom:16, lineHeight:1.5}}>* Gemini API key is required for AI Search, Interview Prep, Cover Letter, and Gmail parsing natively without MCP.</div>
+          <Btn v="pri" onClick={saveSettings} sx={{width:"100%",justifyContent:"center",padding:"11px"}}>Save Settings</Btn>
+        </Modal>
+      )}
+
       {/* Add / Edit */}
       {showAdd&&(
         <Modal title={editId?"✏️ Edit Job":"＋ Add Job"} onClose={()=>setShowAdd(false)}>
@@ -809,6 +1046,7 @@ export default function Dashboard({ session }) {
           </div>}
           <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
             {showDetail.applylink&&<a href={showDetail.applylink} target="_blank" rel="noreferrer" style={{textDecoration:"none"}}><Btn v="pri">Apply Now ↗</Btn></a>}
+            <Btn onClick={()=>{addToCalendar(showDetail);setShowDetail(null);}}>📅 Add to Calendar</Btn>
             <Btn onClick={()=>{doPrep(showDetail);setShowDetail(null);}}>🎙 Interview Prep</Btn>
             <Btn onClick={()=>{setShowCover(showDetail);setCoverOut("");setShowDetail(null);}}>✉ Cover Letter</Btn>
           </div>
@@ -824,6 +1062,7 @@ export default function Dashboard({ session }) {
           {prepOut&&!prepLoad&&<div style={{display:"flex",gap:8,marginTop:12}}>
             <Btn v="pri" onClick={()=>doPrep(showPrep)}>🔄 Regenerate</Btn>
             <Btn onClick={()=>{navigator.clipboard?.writeText(prepOut);notify("Copied ✓");}}>📋 Copy</Btn>
+            <Btn v="cyn" onClick={()=>saveToDrive(`Interview_Prep_${showPrep.company}.txt`, prepOut)}>📥 Save to Drive</Btn>
           </div>}
         </Modal>
       )}
@@ -841,6 +1080,7 @@ export default function Dashboard({ session }) {
               <div style={{background:"#0a111e",border:"1px solid #1e293b",borderRadius:10,padding:16,whiteSpace:"pre-wrap",lineHeight:1.8,fontSize:13,color:"#94a3b8",marginTop:14,maxHeight:460,overflowY:"auto"}}>{coverOut}</div>
               <div style={{display:"flex",gap:8,marginTop:12}}>
                 <Btn onClick={()=>{navigator.clipboard?.writeText(coverOut);notify("Copied ✓");}}>📋 Copy Letter</Btn>
+                <Btn v="cyn" onClick={()=>saveToDrive(`Cover_Letter_${showCover.company}.txt`, coverOut)}>📥 Save to Drive</Btn>
                 <Btn onClick={()=>doCover(showCover)}>🔄 Regenerate</Btn>
               </div>
             </>
