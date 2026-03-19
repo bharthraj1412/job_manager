@@ -337,7 +337,7 @@ export default function Dashboard({ session }) {
           else resolve(resp.access_token);
         }
       });
-      tokenClient.requestAccessToken({prompt: 'consent'});
+      tokenClient.requestAccessToken({ prompt: '' });
     });
   }
 
