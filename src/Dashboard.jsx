@@ -183,7 +183,7 @@ export default function Dashboard({ session }) {
   const [showSettings, setShowSettings] = useState(false);
 
   const [geminiKey, setGeminiKey] = useState(() => localStorage.getItem("geminiKey") || "sk-3be74272e0e44b18994f09cec79caadb");
-  const [clientId, setClientId] = useState(() => localStorage.getItem("googleClientId") || "531663408839-fd70j89efgbtg26uadtdob7plvbh7nta.apps.googleusercontent.com");
+  const [clientId, setClientId] = useState(() => localStorage.getItem("googleClientId") || import.meta.env.VITE_GOOGLE_CLIENT_ID || "531663408839-fd70j89efgbtg26uadtdob7plvbh7nta.apps.googleusercontent.com");
   const [aiModel, setAiModel] = useState(() => localStorage.getItem("aiModel") || "gemini-2.5-flash");
   const [proxyUrl, setProxyUrl] = useState(() => localStorage.getItem("proxyUrl") || "http://10.151.72.225:8045/v1/chat/completions");
 
