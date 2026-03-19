@@ -172,12 +172,16 @@ export default function Dashboard({ session }) {
   const [clientId, setClientId] = useState(() => localStorage.getItem("googleClientId") || import.meta.env.VITE_GOOGLE_CLIENT_ID || "");
   const [aiModel, setAiModel] = useState(() => localStorage.getItem("aiModel") || NVIDIA_MODEL);
   const [proxyUrl, setProxyUrl] = useState(() => localStorage.getItem("proxyUrl") || NVIDIA_API_URL);
+  const [adzunaId,  setAdzunaId]  = useState(() => localStorage.getItem("adzunaId")  || "538be205");
+  const [adzunaKey, setAdzunaKey] = useState(() => localStorage.getItem("adzunaKey") || "8821660cdab1e3b4a33c8ee8a23f3c3f");
 
   function saveSettings() {
     localStorage.setItem("geminiKey", geminiKey);
     localStorage.setItem("googleClientId", clientId);
     localStorage.setItem("aiModel", aiModel);
     localStorage.setItem("proxyUrl", proxyUrl);
+    localStorage.setItem("adzunaId",  adzunaId);
+    localStorage.setItem("adzunaKey", adzunaKey);
     notify("Settings saved ✓");
     setShowSettings(false);
   }
@@ -258,20 +262,41 @@ export default function Dashboard({ session }) {
   function toggleSort(k){if(sortK===k)setSortD(d=>d==="asc"?"desc":"asc");else{setSortK(k);setSortD("asc");}}
   const sIcon=k=>sortK===k?(sortD==="asc"?"↑":"↓"):<span style={{opacity:.2}}>↕</span>;
 
-  // ── AI Job Search ─────────────────────────────────────────────────────────
+  // ── Job Search (Adzuna Live Jobs) ─────────────────────────────────────────
   async function doSearch() {
-    if(!sq.trim())return;
+    if(!sq.trim()) return;
     setSLoad(true); setSr([]); setSErr("");
+    if (!adzunaId || !adzunaKey) {
+      setSErr("Adzuna App ID and Key required — add them in ⚙️ Settings.");
+      setSLoad(false); return;
+    }
     try {
-      const sys = `You are a job search assistant. Generate realistic, plausible job listings. Always return ONLY a valid JSON array. No markdown, no explanation.`;
-      const prompt = `Find 6 realistic job listings matching: "${sq}"\nReturn JSON array with keys: title, company, location, type, salary, skills, source, applylink, description. ONLY the JSON array.`;
-      const text = await callGemini(prompt, sys, geminiKey, aiModel, proxyUrl);
-      const clean = text.replace(/```json|```/g,"").trim();
-      const s=clean.indexOf("["), e=clean.lastIndexOf("]");
-      if(s===-1) throw new Error("No JSON array found");
-      setSr(JSON.parse(clean.slice(s,e+1)));
+      const url = `https://api.adzuna.com/v1/api/jobs/in/search/1?app_id=${adzunaId}&app_key=${adzunaKey}&results_per_page=10&what=${encodeURIComponent(sq)}&content-type=application/json`;
+      const res = await fetch(url);
+      if (!res.ok) {
+        const errText = await res.text();
+        throw new Error(`Adzuna error ${res.status}: ${errText}`);
+      }
+      const data = await res.json();
+      if (!data.results?.length) {
+        setSErr("No jobs found on Adzuna — try different keywords (e.g. \"software engineer\", \"data analyst\").");
+        setSLoad(false); return;
+      }
+      setSr(data.results.map(j => ({
+        title:       j.title,
+        company:     j.company?.display_name || "Unknown",
+        location:    j.location?.display_name || "",
+        type:        j.contract_time === "part_time" ? "Part-time" : "Full-time",
+        salary:      j.salary_min
+                       ? `₹${Math.round(j.salary_min).toLocaleString()} – ₹${Math.round(j.salary_max || j.salary_min).toLocaleString()}`
+                       : "Not disclosed",
+        skills:      "",
+        source:      "Adzuna",
+        applylink:   j.redirect_url || "",
+        description: j.description ? j.description.slice(0, 150) + "…" : "",
+      })));
     } catch(err) {
-      setSErr(err.message + " — check API Key in Settings");
+      setSErr(err.message);
     }
     setSLoad(false);
   }
@@ -944,6 +969,17 @@ export default function Dashboard({ session }) {
           <F label="API Base URL"><Inp value={proxyUrl} onChange={e=>setProxyUrl(e.target.value)} placeholder="https://integrate.api.nvidia.com/v1/chat/completions"/></F>
           <F label="AI Model"><Inp value={aiModel} onChange={e=>setAiModel(e.target.value)} placeholder="deepseek-ai/deepseek-r1"/></F>
           <F label="Google Client ID (for Gmail Scanner)"><Inp value={clientId} onChange={e=>setClientId(e.target.value)} placeholder="…apps.googleusercontent.com"/></F>
+          <div style={{borderTop:"1px solid #1e293b",margin:"14px 0 14px",paddingTop:14}}>
+            <div style={{color:"#06b6d4",fontSize:10,fontWeight:700,letterSpacing:"0.1em",textTransform:"uppercase",marginBottom:10}}>
+              🟢 Adzuna Job Search (Real Listings)
+            </div>
+            <F label="Adzuna App ID">
+              <Inp value={adzunaId} onChange={e=>setAdzunaId(e.target.value)} placeholder="e.g. 538be205"/>
+            </F>
+            <F label="Adzuna App Key">
+              <Inp type="password" value={adzunaKey} onChange={e=>setAdzunaKey(e.target.value)} placeholder="your_app_key"/>
+            </F>
+          </div>
           <div style={{color:"#475569",fontSize:11,marginBottom:16,lineHeight:1.5,padding:"10px 12px",background:"#0a111e",borderRadius:8,border:"1px solid #1e293b"}}>
             ℹ️ API key and settings are stored in your browser only (localStorage) and never sent to our servers.<br/>
             🤖 Powered by DeepSeek-R1 via NVIDIA NIM API.
@@ -977,7 +1013,11 @@ export default function Dashboard({ session }) {
       {/* AI Job Search */}
       {showSearch&&(
         <Modal title="🔍 AI Job Search" onClose={()=>{setShowSearch(false);setSr([]);setSq("");}}>
-          <p style={{color:"#64748b",fontSize:12,margin:"0 0 12px"}}>AI generates realistic job listings based on your query. Configure your API key in Settings first.</p>
+          <p style={{color:"#64748b",fontSize:12,margin:"0 0 12px"}}>
+            {adzunaId && adzunaKey
+              ? "🟢 Live jobs from Adzuna — real listings with direct apply links."
+              : "🟡 Add your Adzuna App ID & Key in ⚙️ Settings to fetch real jobs."}
+          </p>
           <div style={{display:"flex",gap:8,marginBottom:12}}>
             <Inp value={sq} onChange={e=>setSq(e.target.value)} onKeyDown={e=>e.key==="Enter"&&doSearch()} placeholder='e.g. "IT fresher jobs 2026 Tamil Nadu"' sx={{flex:1}}/>
             <Btn v="pri" onClick={doSearch} disabled={sLoad}>{sLoad?"Searching…":"Search"}</Btn>
