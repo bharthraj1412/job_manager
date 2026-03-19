@@ -29,7 +29,7 @@ const TYPES = ["Full-time","Part-time","Internship","Contract","Freelance"];
 const fmtDate = d => d ? new Date(d).toLocaleDateString("en-IN",{day:"numeric",month:"short"}) : "—";
 const daysDiff = d => d ? Math.ceil((new Date(d)-new Date())/86400000) : null;
 
-const NVIDIA_API_URL  = "https://integrate.api.nvidia.com/v1/chat/completions";
+const NVIDIA_API_URL  = "/api/ai";   // Proxied: Vite in dev, Vercel function in prod
 const NVIDIA_API_KEY  = "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";
 const NVIDIA_MODEL    = "deepseek-ai/deepseek-r1";
 
