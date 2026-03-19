@@ -29,16 +29,20 @@ const TYPES = ["Full-time","Part-time","Internship","Contract","Freelance"];
 const fmtDate = d => d ? new Date(d).toLocaleDateString("en-IN",{day:"numeric",month:"short"}) : "—";
 const daysDiff = d => d ? Math.ceil((new Date(d)-new Date())/86400000) : null;
 
-async function callGemini(prompt, sysprompt="", apiKey="", modelName="gemini-2.5-flash", proxyUrl="http://10.151.72.225:8045/v1/chat/completions") {
+const NVIDIA_API_URL  = "https://integrate.api.nvidia.com/v1/chat/completions";
+const NVIDIA_API_KEY  = "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";
+const NVIDIA_MODEL    = "deepseek-ai/deepseek-r1";
+
+async function callGemini(prompt, sysprompt="", apiKey=NVIDIA_API_KEY, modelName=NVIDIA_MODEL, proxyUrl=NVIDIA_API_URL) {
   if (!apiKey) throw new Error("API key is required. Please add it in Settings.");
   const messages = [];
   if (sysprompt) messages.push({ role: "system", content: sysprompt });
   messages.push({ role: "user", content: prompt });
-  const body = { model: modelName, messages, temperature: 0.2 };
+  const body = { model: modelName, messages, temperature: 0.6, top_p: 0.7, max_tokens: 4096 };
   const r = await fetch(proxyUrl, {
-    method:"POST",
-    headers:{ "Content-Type":"application/json", "Authorization": `Bearer ${apiKey}` },
-    body:JSON.stringify(body)
+    method: "POST",
+    headers: { "Content-Type": "application/json", "Authorization": `Bearer ${apiKey}` },
+    body: JSON.stringify(body)
   });
   if (!r.ok) {
     const errorText = await r.text();
@@ -46,6 +50,7 @@ async function callGemini(prompt, sysprompt="", apiKey="", modelName="gemini-2.5
   }
   const d = await r.json();
   if (d.error) throw new Error(d.error.message);
+  // DeepSeek-R1 returns reasoning_content separately — we return the main content
   return d.choices?.[0]?.message?.content || "";
 }
 
@@ -163,10 +168,10 @@ export default function Dashboard({ session }) {
   const [showDetail, setShowDetail] = useState(null);
   const [showSettings, setShowSettings] = useState(false);
 
-  const [geminiKey, setGeminiKey] = useState(() => localStorage.getItem("geminiKey") || "");
+  const [geminiKey, setGeminiKey] = useState(() => localStorage.getItem("geminiKey") || NVIDIA_API_KEY);
   const [clientId, setClientId] = useState(() => localStorage.getItem("googleClientId") || import.meta.env.VITE_GOOGLE_CLIENT_ID || "");
-  const [aiModel, setAiModel] = useState(() => localStorage.getItem("aiModel") || "gemini-2.5-flash");
-  const [proxyUrl, setProxyUrl] = useState(() => localStorage.getItem("proxyUrl") || "http://10.151.72.225:8045/v1/chat/completions");
+  const [aiModel, setAiModel] = useState(() => localStorage.getItem("aiModel") || NVIDIA_MODEL);
+  const [proxyUrl, setProxyUrl] = useState(() => localStorage.getItem("proxyUrl") || NVIDIA_API_URL);
 
   function saveSettings() {
     localStorage.setItem("geminiKey", geminiKey);
@@ -935,12 +940,13 @@ export default function Dashboard({ session }) {
       {/* Settings */}
       {showSettings&&(
         <Modal title="⚙️ AI & Integrations Settings" onClose={()=>setShowSettings(false)}>
-          <F label="API / Proxy Key *"><Inp type="password" value={geminiKey} onChange={e=>setGeminiKey(e.target.value)} placeholder="sk-…"/></F>
-          <F label="Proxy Base URL"><Inp value={proxyUrl} onChange={e=>setProxyUrl(e.target.value)} placeholder="http://host:port/v1/chat/completions"/></F>
-          <F label="AI Model Name"><Inp value={aiModel} onChange={e=>setAiModel(e.target.value)} placeholder="gemini-2.5-flash"/></F>
+          <F label="NVIDIA API Key *"><Inp type="password" value={geminiKey} onChange={e=>setGeminiKey(e.target.value)} placeholder="nvapi-…"/></F>
+          <F label="API Base URL"><Inp value={proxyUrl} onChange={e=>setProxyUrl(e.target.value)} placeholder="https://integrate.api.nvidia.com/v1/chat/completions"/></F>
+          <F label="AI Model"><Inp value={aiModel} onChange={e=>setAiModel(e.target.value)} placeholder="deepseek-ai/deepseek-r1"/></F>
           <F label="Google Client ID (for Gmail Scanner)"><Inp value={clientId} onChange={e=>setClientId(e.target.value)} placeholder="…apps.googleusercontent.com"/></F>
           <div style={{color:"#475569",fontSize:11,marginBottom:16,lineHeight:1.5,padding:"10px 12px",background:"#0a111e",borderRadius:8,border:"1px solid #1e293b"}}>
-            ℹ️ API key and settings are stored in your browser only (localStorage) and never sent to our servers.
+            ℹ️ API key and settings are stored in your browser only (localStorage) and never sent to our servers.<br/>
+            🤖 Powered by DeepSeek-R1 via NVIDIA NIM API.
           </div>
           <Btn v="pri" onClick={saveSettings} sx={{width:"100%",justifyContent:"center",padding:"11px"}}>Save Settings</Btn>
         </Modal>
