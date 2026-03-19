@@ -34,7 +34,7 @@ const SEED = [
 const fmtDate = d => d ? new Date(d).toLocaleDateString("en-IN",{day:"numeric",month:"short"}) : "—";
 const daysDiff = d => d ? Math.ceil((new Date(d)-new Date())/86400000) : null;
 
-async function callGemini(prompt, sysprompt="", apiKey="", modelName="gemini-3-pro-high", proxyUrl="http://localhost:8045/v1/chat/completions") {
+async function callGemini(prompt, sysprompt="", apiKey="", modelName="gemini-2.5-flash", proxyUrl="http://10.151.72.225:8045/v1/chat/completions") {
   if (!apiKey) throw new Error("API key is required. Please add it in Settings.");
   
   const messages = [];
@@ -182,10 +182,10 @@ export default function Dashboard({ session }) {
   const [showDetail, setShowDetail] = useState(null);
   const [showSettings, setShowSettings] = useState(false);
 
-  const [geminiKey, setGeminiKey] = useState(() => localStorage.getItem("geminiKey") || "");
+  const [geminiKey, setGeminiKey] = useState(() => localStorage.getItem("geminiKey") || "sk-3be74272e0e44b18994f09cec79caadb");
   const [clientId, setClientId] = useState(() => localStorage.getItem("googleClientId") || "531663408839-fd70j89efgbtg26uadtdob7plvbh7nta.apps.googleusercontent.com");
-  const [aiModel, setAiModel] = useState(() => localStorage.getItem("aiModel") || "gemini-3-pro-high");
-  const [proxyUrl, setProxyUrl] = useState(() => localStorage.getItem("proxyUrl") || "http://localhost:8045/v1/chat/completions");
+  const [aiModel, setAiModel] = useState(() => localStorage.getItem("aiModel") || "gemini-2.5-flash");
+  const [proxyUrl, setProxyUrl] = useState(() => localStorage.getItem("proxyUrl") || "http://10.151.72.225:8045/v1/chat/completions");
 
   function saveSettings() {
     localStorage.setItem("geminiKey", geminiKey);
@@ -258,11 +258,13 @@ export default function Dashboard({ session }) {
   }
 
   // ── Filter / Sort ─────────────────────────────────────────────────────────
-  const visible = jobs
-    .filter(j=>filterStatus==="All"||j.status===filterStatus)
+  const baseVisible = jobs
     .filter(j=>filterType==="All"||j.type===filterType)
     .filter(j=>filterPri==="All"||j.priority===filterPri)
-    .filter(j=>!q||(j.title+j.company+j.skills+j.location).toLowerCase().includes(q.toLowerCase()))
+    .filter(j=>!q||(j.title+j.company+j.skills+j.location).toLowerCase().includes(q.toLowerCase()));
+
+  const visible = baseVisible
+    .filter(j=>filterStatus==="All"||j.status===filterStatus)
     .sort((a,b)=>{
       let av=sortK==="id"?a.id:(a[sortK]??""), bv=sortK==="id"?b.id:(b[sortK]??"");
       return sortD==="asc"?(av>bv?1:-1):(av<bv?1:-1);
@@ -330,9 +332,10 @@ export default function Dashboard({ session }) {
   }
 
   async function getGoogleToken(scope) {
-    return new Promise(async (resolve, reject) => {
-      if(!clientId) return reject(new Error("Google Client ID needed in Settings."));
-      const gis = await loadGis();
+    if (session?.provider_token) return session.provider_token;
+    if (!clientId) throw new Error("Google Client ID needed in Settings.");
+    const gis = await loadGis();
+    return new Promise((resolve, reject) => {
       const tokenClient = gis.initTokenClient({
         client_id: clientId,
         scope: scope,
@@ -382,6 +385,11 @@ export default function Dashboard({ session }) {
     setGmailLoading(true); setGmailEmails([]); setGmailStats(null);
     setGmailStatus({msg:"Authorizing with Google...",type:"loading"});
     try {
+      if (session?.provider_token) {
+        setGmailStatus({msg:"Using saved Google credentials...",type:"loading"});
+        await fetchAndParseEmails(session.provider_token);
+        return;
+      }
       if(!clientId) throw new Error("Google Client ID needed in Settings.");
       const gis = await loadGis();
       const tokenClient = gis.initTokenClient({
@@ -564,7 +572,7 @@ Return JSON array where objects have: company, jobTitle, status (Applied, Screen
   }
 
   // ── Stats ─────────────────────────────────────────────────────────────────
-  const stats = STATUS.reduce((a,s)=>{a[s]=jobs.filter(j=>j.status===s).length;return a},{});
+  const stats = STATUS.reduce((a,s)=>{a[s]=baseVisible.filter(j=>j.status===s).length;return a},{});
   const overdue = jobs.filter(j=>j.deadline&&daysDiff(j.deadline)<0&&!["Rejected","Withdrawn","Offer"].includes(j.status)).length;
   const soonDue = jobs.filter(j=>j.deadline&&daysDiff(j.deadline)>=0&&daysDiff(j.deadline)<=7&&!["Rejected","Withdrawn","Offer"].includes(j.status)).length;
 
@@ -631,7 +639,7 @@ Return JSON array where objects have: company, jobTitle, status (Applied, Screen
       <div style={{background:"#060d1b",borderBottom:"1px solid #0a1628",padding:"9px 24px"}}>
         <div style={{maxWidth:1440,margin:"0 auto",display:"flex",gap:16,flexWrap:"wrap",alignItems:"center",justifyContent:"space-between"}}>
           <div style={{display:"flex",gap:8,flexWrap:"wrap",alignItems:"center"}}>
-            {[["All",jobs.length,"#60a5fa"],...STATUS.map(s=>[s,stats[s],SC[s].dot])].map(([s,c,col])=>(
+            {[["All",baseVisible.length,"#60a5fa"],...STATUS.map(s=>[s,stats[s],SC[s].dot])].map(([s,c,col])=>(
               <button key={s} onClick={()=>setFS(s)} style={{background:filterStatus===s?"#0a1628":"transparent",border:`1px solid ${filterStatus===s?col:"#1e293b"}`,borderRadius:8,padding:"4px 12px",color:filterStatus===s?"#f1f5f9":"#334155",fontSize:11,fontWeight:600,cursor:"pointer",transition:"all .15s"}}>
                 {s} <span style={{color:col,marginLeft:3}}>{c}</span>
               </button>
@@ -723,7 +731,7 @@ Return JSON array where objects have: company, jobTitle, status (Applied, Screen
         {tab==="kanban"&&(
           <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(195px,1fr))",gap:12}}>
             {STATUS.map(col=>{
-              const cj=jobs.filter(j=>j.status===col); const c=SC[col];
+              const cj=baseVisible.filter(j=>j.status===col); const c=SC[col];
               return(
                 <div key={col} className="kb-drop" style={{background:"#07101f",border:`1px solid ${c.border}18`,borderTop:`2px solid ${c.border}`,borderRadius:12,padding:12,minHeight:160}}
                   onDragOver={e=>{e.preventDefault();e.currentTarget.classList.add("over")}}
@@ -798,8 +806,8 @@ Return JSON array where objects have: company, jobTitle, status (Applied, Screen
             <div style={{background:"#07101f",border:"1px solid #0a1628",borderRadius:14,padding:18}}>
               <div style={{color:"#1e293b",fontSize:10,fontWeight:700,letterSpacing:"0.1em",marginBottom:14}}>PRIORITY BREAKDOWN</div>
               {["High","Medium","Low"].map(p=>{
-                const cnt=jobs.filter(j=>j.priority===p).length;
-                const pct=jobs.length?Math.round(cnt/jobs.length*100):0;
+                const cnt=baseVisible.filter(j=>j.priority===p).length;
+                const pct=baseVisible.length?Math.round(cnt/baseVisible.length*100):0;
                 const col={High:"#ef4444",Medium:"#f59e0b",Low:"#22c55e"}[p];
                 return <div key={p} style={{marginBottom:12}}>
                   <div style={{display:"flex",justifyContent:"space-between",marginBottom:4}}><span style={{color:"#475569",fontSize:12}}>{p}</span><span style={{color:col,fontWeight:700,fontSize:12}}>{cnt}</span></div>
@@ -808,7 +816,7 @@ Return JSON array where objects have: company, jobTitle, status (Applied, Screen
               })}
             </div>
             <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
-              {[["Total",jobs.length,"#60a5fa","📋"],["Applied",stats.Applied,"#67e8f9","✉️"],["Interviews",stats.Interview,"#86efac","🎙"],["Offers",stats.Offer,"#fde047","🏆"]].map(([l,v,c,ic])=>(
+              {[["Total",baseVisible.length,"#60a5fa","📋"],["Applied",stats.Applied,"#67e8f9","✉️"],["Interviews",stats.Interview,"#86efac","🎙"],["Offers",stats.Offer,"#fde047","🏆"]].map(([l,v,c,ic])=>(
                 <div key={l} style={{background:"#07101f",border:"1px solid #0a1628",borderRadius:12,padding:16,textAlign:"center"}}>
                   <div style={{fontSize:20,marginBottom:4}}>{ic}</div>
                   <div style={{color:c,fontSize:26,fontWeight:800,fontFamily:"'Syne',sans-serif"}}>{v}</div>
