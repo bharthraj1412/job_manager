@@ -21,7 +21,7 @@ export default function App() {
   }, []);
 
   if (loading) return <div style={{height:'100vh', background:'#050c1a'}} />;
-  
+
   if (!session) return <Auth />;
   return <Dashboard session={session} />;
 }

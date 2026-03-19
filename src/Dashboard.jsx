@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect } from "react";
 import { supabase } from "./supabase";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, PieChart, Pie, Cell } from "recharts";
-import * as XLSX from "https://cdn.sheetjs.com/xlsx-0.20.1/package/xlsx.mjs";
+import * as XLSX from "xlsx";
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 const STATUS = ["Bookmarked","Applied","Interview","Offer","Rejected","Withdrawn"];
@@ -24,11 +24,6 @@ const GMAIL_STATUS_COLORS = {
   "Pending":            { bg:"rgba(148,163,184,0.12)", fg:"#94a3b8", accent:"#64748b", lb:"#1e293b" },
 };
 const TYPES = ["Full-time","Part-time","Internship","Contract","Freelance"];
-const SEED = [
-  { id:1, title:"Graduate Engineer Trainee – IT", company:"Aurolab", location:"Madurai, TN", type:"Full-time", salary:"₹3 LPA", skills:"Python, SQL, AI/ML, Networking", source:"Direct", applylink:"", status:"Bookmarked", applieddate:"", deadline:"2026-04-15", notes:"2026 batch. BE/BTech IT/CSE/AI/DS/ECE.", priority:"High" },
-  { id:2, title:"Software Engineer Intern", company:"Zoho Corp", location:"Chennai, TN", type:"Internship", salary:"₹20,000/mo", skills:"Java, React, SQL", source:"Naukri", applylink:"https://careers.zoho.com", status:"Applied", applieddate:"2026-03-10", deadline:"2026-03-31", notes:"Applied via Zoho careers portal.", priority:"High" },
-  { id:3, title:"Data Analyst", company:"Freshworks", location:"Remote", type:"Full-time", salary:"₹6 LPA", skills:"Python, Tableau, SQL", source:"LinkedIn", applylink:"", status:"Interview", applieddate:"2026-02-28", deadline:"", notes:"Round 2 scheduled for Mar 25.", priority:"Medium" },
-];
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 const fmtDate = d => d ? new Date(d).toLocaleDateString("en-IN",{day:"numeric",month:"short"}) : "—";
@@ -36,26 +31,15 @@ const daysDiff = d => d ? Math.ceil((new Date(d)-new Date())/86400000) : null;
 
 async function callGemini(prompt, sysprompt="", apiKey="", modelName="gemini-2.5-flash", proxyUrl="http://10.151.72.225:8045/v1/chat/completions") {
   if (!apiKey) throw new Error("API key is required. Please add it in Settings.");
-  
   const messages = [];
   if (sysprompt) messages.push({ role: "system", content: sysprompt });
   messages.push({ role: "user", content: prompt });
-
-  const body = {
-    model: modelName,
-    messages: messages,
-    temperature: 0.2
-  };
-
+  const body = { model: modelName, messages, temperature: 0.2 };
   const r = await fetch(proxyUrl, {
-    method:"POST", 
-    headers:{
-      "Content-Type":"application/json",
-      "Authorization": `Bearer ${apiKey}`
-    }, 
+    method:"POST",
+    headers:{ "Content-Type":"application/json", "Authorization": `Bearer ${apiKey}` },
     body:JSON.stringify(body)
   });
-  
   if (!r.ok) {
     const errorText = await r.text();
     throw new Error(`API Error: ${r.status} ${errorText}`);
@@ -64,8 +48,6 @@ async function callGemini(prompt, sysprompt="", apiKey="", modelName="gemini-2.5
   if (d.error) throw new Error(d.error.message);
   return d.choices?.[0]?.message?.content || "";
 }
-
-// AI Interfacing Decoupled
 
 // ── Atoms ─────────────────────────────────────────────────────────────────────
 const Btn = ({children,onClick,v="def",disabled,sx={}}) => {
@@ -80,7 +62,7 @@ const Btn = ({children,onClick,v="def",disabled,sx={}}) => {
   return (
     <button onClick={onClick} disabled={disabled} style={{
       ...vs[v],borderRadius:8,padding:"8px 14px",fontSize:12,fontWeight:600,
-      cursor:disabled?"not-allowed":"pointer",opacity:disabled?.55:1,
+      cursor:disabled?"not-allowed":"pointer",opacity:disabled?0.55:1,
       display:"inline-flex",alignItems:"center",gap:6,whiteSpace:"nowrap",fontFamily:"inherit",...sx
     }}>{children}</button>
   );
@@ -110,7 +92,6 @@ const F = ({label,children}) => (
     {children}
   </div>
 );
-
 const Badge = ({s}) => {
   const c = SC[s]||SC.Bookmarked;
   return (
@@ -133,7 +114,6 @@ const Deadline = ({date}) => {
   const lbl=d<0?`${Math.abs(d)}d overdue`:d===0?"Today!":d===1?"Tomorrow":`${d}d left`;
   return <span style={{color:col,fontSize:10,fontWeight:700}}>⏱ {lbl}</span>;
 };
-
 const Modal = ({title,children,onClose,wide=false}) => (
   <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,.85)",zIndex:900,
     display:"flex",alignItems:"center",justifyContent:"center",padding:20,overflowY:"auto"}}
@@ -170,7 +150,8 @@ export default function Dashboard({ session }) {
     const { data } = await supabase.from('jobs').select('*').order('created_at', { ascending: false });
     if (data) setJobs(data);
   };
-  
+
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { fetchJobs(); }, [session]);
 
   // modals
@@ -182,8 +163,8 @@ export default function Dashboard({ session }) {
   const [showDetail, setShowDetail] = useState(null);
   const [showSettings, setShowSettings] = useState(false);
 
-  const [geminiKey, setGeminiKey] = useState(() => localStorage.getItem("geminiKey") || "sk-3be74272e0e44b18994f09cec79caadb");
-  const [clientId, setClientId] = useState(() => localStorage.getItem("googleClientId") || import.meta.env.VITE_GOOGLE_CLIENT_ID || "531663408839-fd70j89efgbtg26uadtdob7plvbh7nta.apps.googleusercontent.com");
+  const [geminiKey, setGeminiKey] = useState(() => localStorage.getItem("geminiKey") || "");
+  const [clientId, setClientId] = useState(() => localStorage.getItem("googleClientId") || import.meta.env.VITE_GOOGLE_CLIENT_ID || "");
   const [aiModel, setAiModel] = useState(() => localStorage.getItem("aiModel") || "gemini-2.5-flash");
   const [proxyUrl, setProxyUrl] = useState(() => localStorage.getItem("proxyUrl") || "http://10.151.72.225:8045/v1/chat/completions");
 
@@ -272,20 +253,20 @@ export default function Dashboard({ session }) {
   function toggleSort(k){if(sortK===k)setSortD(d=>d==="asc"?"desc":"asc");else{setSortK(k);setSortD("asc");}}
   const sIcon=k=>sortK===k?(sortD==="asc"?"↑":"↓"):<span style={{opacity:.2}}>↕</span>;
 
-  // ── AI Job Search (FIXED) ─────────────────────────────────────────────────
+  // ── AI Job Search ─────────────────────────────────────────────────────────
   async function doSearch() {
     if(!sq.trim())return;
     setSLoad(true); setSr([]); setSErr("");
     try {
-      const sys = `You are a job search assistant. Generate realistic, plausible job listings based on what's available on LinkedIn, Naukri, Indeed, Internshala, and company career pages. Always return ONLY a valid JSON array. No markdown, no explanation, no preamble.`;
-      const prompt = `Find 6 realistic job listings matching this search: "${sq}"\nReturn a JSON array where each object has exactly these keys: title, company, location, type, salary, skills, source, applylink, description.\nReturn ONLY the JSON array.`;
+      const sys = `You are a job search assistant. Generate realistic, plausible job listings. Always return ONLY a valid JSON array. No markdown, no explanation.`;
+      const prompt = `Find 6 realistic job listings matching: "${sq}"\nReturn JSON array with keys: title, company, location, type, salary, skills, source, applylink, description. ONLY the JSON array.`;
       const text = await callGemini(prompt, sys, geminiKey, aiModel, proxyUrl);
       const clean = text.replace(/```json|```/g,"").trim();
       const s=clean.indexOf("["), e=clean.lastIndexOf("]");
       if(s===-1) throw new Error("No JSON array found");
       setSr(JSON.parse(clean.slice(s,e+1)));
     } catch(err) {
-      setSErr(err.message + " (Check API Key in Settings)");
+      setSErr(err.message + " — check API Key in Settings");
     }
     setSLoad(false);
   }
@@ -296,8 +277,9 @@ export default function Dashboard({ session }) {
     setPrepLoad(true); setPrepOut(""); setShowPrep(job);
     try {
       const t = await callGemini(
-        `Create a concise interview prep guide for "${job.title}" at ${job.company}. Include: 5 technical questions with answer hints (skills: ${job.skills}), 3 STAR behavioral questions, 2 questions to ask them, 3 things to research about ${job.company}. Ensure clear headers.`,
-        "You are an expert career coach. Provide specific, actionable interview preparation.", geminiKey, aiModel, proxyUrl
+        `Create a concise interview prep guide for "${job.title}" at ${job.company}. Include: 5 technical questions with answer hints (skills: ${job.skills}), 3 STAR behavioral questions, 2 questions to ask them, 3 things to research about ${job.company}. Use clear headers.`,
+        "You are an expert career coach. Provide specific, actionable interview preparation.",
+        geminiKey, aiModel, proxyUrl
       );
       setPrepOut(t);
     } catch(err) { setPrepOut("Error: " + err.message); }
@@ -307,18 +289,19 @@ export default function Dashboard({ session }) {
   // ── AI Cover Letter ───────────────────────────────────────────────────────
   async function doCover(job) {
     if(!job) return;
-    setCoverLoad(true); setCoverOut(""); setShowCover(job);
+    setCoverLoad(true); setCoverOut("");
     try {
       const t = await callGemini(
         `Write a compelling 3-paragraph cover letter for: Role: ${job.title} at ${job.company} (${job.location}). Skills needed: ${job.skills}. Candidate background: ${bio||"Recent graduate"}. Be specific, genuine. No clichés.`,
-        "You are a professional career writer. Write natural, tailored cover letters.", geminiKey, aiModel, proxyUrl
+        "You are a professional career writer. Write natural, tailored cover letters.",
+        geminiKey, aiModel, proxyUrl
       );
       setCoverOut(t);
     } catch(err) { setCoverOut("Error: " + err.message); }
     setCoverLoad(false);
   }
 
-  // ── Gmail Scanner ─────────────────────────────────────────────────────────
+  // ── Google helpers ────────────────────────────────────────────────────────
   async function loadGis() {
     return new Promise((resolve, reject) => {
       if (window.google?.accounts?.oauth2) return resolve(window.google.accounts.oauth2);
@@ -338,7 +321,7 @@ export default function Dashboard({ session }) {
     return new Promise((resolve, reject) => {
       const tokenClient = gis.initTokenClient({
         client_id: clientId,
-        scope: scope,
+        scope,
         callback: (resp) => {
           if (resp.error) reject(new Error(resp.error));
           else resolve(resp.access_token);
@@ -349,17 +332,20 @@ export default function Dashboard({ session }) {
   }
 
   async function addToCalendar(job) {
-    const dateTimeStr = prompt(`Enter interview date/time for ${job.company} (e.g. 2026-03-25T14:00) or leave blank for All-Day on Deadline:`, job.deadline ? `${job.deadline}T09:00` : "");
+    const dateTimeStr = prompt(`Enter interview date/time for ${job.company} (e.g. 2026-03-25T14:00):`, job.deadline ? `${job.deadline}T09:00` : "");
     if(dateTimeStr === null) return;
     try {
-      notify("Requesting Calendar access...", "ok");
+      notify("Requesting Calendar access…");
       const token = await getGoogleToken("https://www.googleapis.com/auth/calendar.events");
-      notify("Creating calendar event...", "ok");
       const isAllDay = dateTimeStr && !dateTimeStr.includes("T");
-      const startObj = isAllDay ? { date: dateTimeStr } : { dateTime: dateTimeStr ? new Date(dateTimeStr).toISOString() : new Date().toISOString() };
-      const endObj = isAllDay ? { date: dateTimeStr } : { dateTime: dateTimeStr ? new Date(new Date(dateTimeStr).getTime() + 60*60*1000).toISOString() : new Date(Date.now()+60*60*1000).toISOString() };
-      const event = { summary: `Interview: ${job.company} - ${job.title}`, description: `Role: ${job.title}\\nLink: ${job.applylink||"none"}\\nNotes: ${job.notes||"none"}`, start: startObj, end: endObj };
-      const res = await fetch("https://www.googleapis.com/calendar/v3/calendars/primary/events", { method: "POST", headers: { "Authorization": `Bearer ${token}`, "Content-Type": "application/json" }, body: JSON.stringify(event) });
+      const startObj = isAllDay ? { date: dateTimeStr } : { dateTime: new Date(dateTimeStr).toISOString() };
+      const endObj   = isAllDay ? { date: dateTimeStr } : { dateTime: new Date(new Date(dateTimeStr).getTime() + 3600000).toISOString() };
+      const event = { summary: `Interview: ${job.company} - ${job.title}`, description: `Role: ${job.title}\nLink: ${job.applylink||"none"}\nNotes: ${job.notes||"none"}`, start: startObj, end: endObj };
+      const res = await fetch("https://www.googleapis.com/calendar/v3/calendars/primary/events", {
+        method: "POST",
+        headers: { "Authorization": `Bearer ${token}`, "Content-Type": "application/json" },
+        body: JSON.stringify(event)
+      });
       if(!res.ok) throw new Error("Failed to create event");
       notify("Added to Google Calendar ✓");
     } catch(err) { notify("Calendar error: " + err.message, "err"); }
@@ -367,26 +353,30 @@ export default function Dashboard({ session }) {
 
   async function saveToDrive(filename, content) {
     try {
-      notify("Requesting Drive access...", "ok");
+      notify("Requesting Drive access…");
       const token = await getGoogleToken("https://www.googleapis.com/auth/drive.file");
-      notify("Saving to Drive...", "ok");
       const boundary = "-------314159265358979323846";
-      const delimiter = "\\r\\n--" + boundary + "\\r\\n";
-      const close_delim = "\\r\\n--" + boundary + "--";
+      const delimiter = "\r\n--" + boundary + "\r\n";
+      const close_delim = "\r\n--" + boundary + "--";
       const metadata = { name: filename, mimeType: "text/plain" };
-      const multipartRequestBody = delimiter + "Content-Type: application/json; charset=UTF-8\\r\\n\\r\\n" + JSON.stringify(metadata) + delimiter + "Content-Type: text/plain; charset=UTF-8\\r\\n\\r\\n" + content + close_delim;
-      const res = await fetch("https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart", { method: "POST", headers: { "Authorization": `Bearer ${token}`, "Content-Type": `multipart/related; boundary="${boundary}"` }, body: multipartRequestBody });
+      const body = delimiter + "Content-Type: application/json; charset=UTF-8\r\n\r\n" + JSON.stringify(metadata) + delimiter + "Content-Type: text/plain; charset=UTF-8\r\n\r\n" + content + close_delim;
+      const res = await fetch("https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart", {
+        method: "POST",
+        headers: { "Authorization": `Bearer ${token}`, "Content-Type": `multipart/related; boundary="${boundary}"` },
+        body
+      });
       if(!res.ok) throw new Error("Failed to save to Drive");
       notify(`Saved "${filename}" to Google Drive ✓`);
     } catch(err) { notify("Drive error: " + err.message, "err"); }
   }
 
+  // ── Gmail Scanner ─────────────────────────────────────────────────────────
   async function startGmailScan() {
     setGmailLoading(true); setGmailEmails([]); setGmailStats(null);
-    setGmailStatus({msg:"Authorizing with Google...",type:"loading"});
+    setGmailStatus({msg:"Authorizing with Google…",type:"loading"});
     try {
       if (session?.provider_token) {
-        setGmailStatus({msg:"Using saved Google credentials...",type:"loading"});
+        setGmailStatus({msg:"Using saved Google credentials…",type:"loading"});
         await fetchAndParseEmails(session.provider_token);
         return;
       }
@@ -397,7 +387,7 @@ export default function Dashboard({ session }) {
         scope: "https://www.googleapis.com/auth/gmail.readonly",
         callback: async (resp) => {
           if (resp.error) {
-            setGmailStatus({msg: "Google auth error: " + resp.error, type: "error"});
+            setGmailStatus({msg:"Google auth error: " + resp.error, type:"error"});
             setGmailLoading(false);
             return;
           }
@@ -413,26 +403,23 @@ export default function Dashboard({ session }) {
 
   async function fetchAndParseEmails(token) {
     try {
-      setGmailStatus({msg:"Fetching recent emails via Gmail API...",type:"loading"});
+      setGmailStatus({msg:"Fetching emails via Gmail API…",type:"loading"});
       let baseQ = `(subject:interview OR subject:offer OR subject:application OR subject:referred OR subject:rejected OR subject:"assessment" OR subject:"next steps" OR subject:"position") newer_than:${gmailDays}d`;
       if (gmailExtra) baseQ += ` ${gmailExtra}`;
-      
       const res = await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/messages?q=${encodeURIComponent(baseQ)}&maxResults=35`, {
         headers: { Authorization: `Bearer ${token}` }
       });
       const data = await res.json();
-      if(!data.messages || data.messages.length===0) {
+      if(!data.messages?.length) {
         setGmailStatus({msg:"✓ Scan complete — no job-related emails found.",type:"success"});
         setGmailLoading(false); return;
       }
-      
-      setGmailStatus({msg:`Reading details of ${data.messages.length} matched emails...`,type:"loading"});
-      const batch = await Promise.all(data.messages.map(m => 
+      setGmailStatus({msg:`Reading ${data.messages.length} matched emails…`,type:"loading"});
+      const batch = await Promise.all(data.messages.map(m =>
         fetch(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${m.id}?format=metadata&metadataHeaders=Subject&metadataHeaders=From&metadataHeaders=Date`, {
           headers: { Authorization: `Bearer ${token}` }
         }).then(r=>r.json())
       ));
-      
       const payload = batch.map(d => {
         let subject="", sender="", date="";
         d.payload?.headers?.forEach(h => {
@@ -442,24 +429,19 @@ export default function Dashboard({ session }) {
         });
         return { subject, sender, date, snippet: d.snippet };
       });
-      
-      setGmailStatus({msg:"Analyzing emails with Gemini...",type:"loading"});
-      const prompt = `Analyze these emails and return a JSON array of job-related emails:
-${JSON.stringify(payload)}
-
-Return JSON array where objects have: company, jobTitle, status (Applied, Screening, Interview Scheduled, Interview Done, Offer Received, Rejected, Pending), interviewDate, interviewTime, interviewType, sender, date, snippet, subject. ONLY JSON array.`;
-      
+      setGmailStatus({msg:"Analyzing emails with AI…",type:"loading"});
+      const prompt = `Analyze these emails and return a JSON array of job-related emails:\n${JSON.stringify(payload)}\nReturn JSON array where objects have: company, jobTitle, status (Applied, Screening, Interview Scheduled, Interview Done, Offer Received, Rejected, Pending), interviewDate, interviewTime, interviewType, sender, date, snippet, subject. ONLY JSON array.`;
       const text = await callGemini(prompt, "You are a job application analyzer. Always return valid JSON arrays only.", geminiKey, aiModel, proxyUrl);
       const clean = text.replace(/```json|```/g,"").trim();
       const match = clean.match(/\[[\s\S]*\]/);
       const emails = match ? JSON.parse(match[0]) : [];
-      
       if(emails.length===0) {
-        setGmailStatus({msg:"✓ Scan complete — no exact matches found in those emails.",type:"success"});
+        setGmailStatus({msg:"✓ Scan complete — no exact matches found.",type:"success"});
       } else {
         setGmailEmails(emails);
         const stats = {
-          total:emails.length, applied:emails.filter(e=>e.status==="Applied").length,
+          total:emails.length,
+          applied:emails.filter(e=>e.status==="Applied").length,
           interview:emails.filter(e=>e.status.includes("Interview")).length,
           offer:emails.filter(e=>e.status.includes("Offer")||e.status==="Accepted").length,
           rejected:emails.filter(e=>e.status==="Rejected").length,
@@ -470,7 +452,7 @@ Return JSON array where objects have: company, jobTitle, status (Applied, Screen
         setGmailStatus({msg:`✓ Found ${emails.length} job-related emails — review below!`,type:"success"});
       }
     } catch(err) {
-      setGmailStatus({msg:"Error parsing: " + err.message, type:"error"});
+      setGmailStatus({msg:"Error: " + err.message, type:"error"});
     }
     setGmailLoading(false);
   }
@@ -488,6 +470,7 @@ Return JSON array where objects have: company, jobTitle, status (Applied, Screen
     XLSX.writeFile(wb,"JobBoard_Pro.xlsx");
     notify("Excel downloaded ✓");
   }
+
   function importXLSX(e) {
     const file=e.target.files[0]; if(!file)return;
     const reader=new FileReader();
@@ -495,7 +478,7 @@ Return JSON array where objects have: company, jobTitle, status (Applied, Screen
       try {
         const wb=XLSX.read(ev.target.result,{type:"array"});
         const ws=wb.Sheets[wb.SheetNames[0]];
-        const aoa=XLSX.utils.sheet_to_json(ws, { header: 1 });
+        const aoa=XLSX.utils.sheet_to_json(ws,{header:1});
         let hr=aoa.findIndex(r=>r&&r.some&&r.some(c=>typeof c==='string'&&c.match(/Company|Role|Title/i)));
         if(hr===-1) hr=0;
         const headers=aoa[hr]||[];
@@ -507,75 +490,59 @@ Return JSON array where objects have: company, jobTitle, status (Applied, Screen
           const obj={};
           headers.forEach((h,C)=>{if(h) obj[h]=rowArr[C];});
           if(applyColIdx!==-1){
-            const cellAddr=XLSX.utils.encode_cell({r:R, c:applyColIdx});
+            const cellAddr=XLSX.utils.encode_cell({r:R,c:applyColIdx});
             const cell=ws[cellAddr];
             if(cell&&cell.l&&cell.l.Target) obj[headers[applyColIdx]]=cell.l.Target;
           }
           data.push(obj);
         }
-        const rows=data;
-
-        const mapped=rows.map((r)=>{
-          const notesParts = [];
+        const mapped=data.map(r=>{
+          const notesParts=[];
           if(r["Job Description"]) notesParts.push(r["Job Description"]);
-          if(r.Eligibility) notesParts.push("Eligibility: " + r.Eligibility);
-          if(r["Perks & Benefits"]) notesParts.push("Perks: " + r["Perks & Benefits"]);
-          const fallbackNotes = notesParts.join(" | ") || r.Notes || r.notes || "";
-
+          if(r.Eligibility) notesParts.push("Eligibility: "+r.Eligibility);
+          if(r["Perks & Benefits"]) notesParts.push("Perks: "+r["Perks & Benefits"]);
           return {
-            title: r["Job Title"] || r["Job Role"] || r.title || "Untitled",
-            company: r.Company || r.company || "",
-            location: r.Location || r.location || "",
-            type: r["Work Mode"] || r.Type || r.type || "Full-time",
-            salary: r["Salary / Stipend (INR)"] || r.Salary || r.salary || "",
-            skills: r["Skills Required"] || r.Skills || r.skills || "",
-            source: r.Source || r.source || "Import",
-            applylink: r["Apply Link"] || r.applylink || "",
-            status: r.Status || r.status || "Bookmarked",
-            priority: r.Priority || r.priority || "Medium",
-            applieddate: r["Posted On"] || r["Applied Date"] || r.applieddate || "",
-            deadline: r.Deadline || r.deadline || "",
-            notes: fallbackNotes,
-            user_id: session.user.id
+            title:r["Job Title"]||r["Job Role"]||r.title||"Untitled",
+            company:r.Company||r.company||"",
+            location:r.Location||r.location||"",
+            type:r["Work Mode"]||r.Type||r.type||"Full-time",
+            salary:r["Salary / Stipend (INR)"]||r.Salary||r.salary||"",
+            skills:r["Skills Required"]||r.Skills||r.skills||"",
+            source:r.Source||r.source||"Import",
+            applylink:r["Apply Link"]||r.applylink||"",
+            status:r.Status||r.status||"Bookmarked",
+            priority:r.Priority||r.priority||"Medium",
+            applieddate:r["Posted On"]||r["Applied Date"]||r.applieddate||"",
+            deadline:r.Deadline||r.deadline||"",
+            notes:notesParts.join(" | ")||r.Notes||r.notes||"",
+            user_id:session.user.id
           };
         });
-
-        const newJobs = [];
-        let skipped = 0;
-        mapped.forEach(r => {
-          const isDup = jobs.some(j => j.title.toLowerCase() === r.title.toLowerCase() && j.company.toLowerCase() === r.company.toLowerCase());
-          if (isDup) skipped++;
-          else newJobs.push(r);
+        const newJobs=[]; let skipped=0;
+        mapped.forEach(r=>{
+          const isDup=jobs.some(j=>j.title.toLowerCase()===r.title.toLowerCase()&&j.company.toLowerCase()===r.company.toLowerCase());
+          if(isDup) skipped++; else newJobs.push(r);
         });
-
-        if (newJobs.length === 0) {
-          notify(`Import ignored — ${skipped} duplicate jobs skipped.`);
-          return;
-        }
-
-        const chunkSize = 500;
-        const doBatches = async () => {
-          let hasErrs = false;
-          let msg = "";
-          for (let i = 0; i < newJobs.length; i += chunkSize) {
-            const chunk = newJobs.slice(i, i + chunkSize);
-            const { error } = await supabase.from('jobs').insert(chunk);
-            if (error) { hasErrs = true; msg = error.message; break; }
+        if(newJobs.length===0){ notify(`Import ignored — ${skipped} duplicate jobs skipped.`); return; }
+        const doBatches=async()=>{
+          let hasErrs=false, msg="";
+          for(let i=0;i<newJobs.length;i+=500){
+            const {error}=await supabase.from('jobs').insert(newJobs.slice(i,i+500));
+            if(error){hasErrs=true;msg=error.message;break;}
           }
-          if (!hasErrs) { fetchJobs(); notify(`Imported ${newJobs.length} new jobs ✓ ${skipped > 0 ? `(${skipped} duplicates skipped)` : ''}`); }
-          else notify(msg, "err");
+          if(!hasErrs){fetchJobs();notify(`Imported ${newJobs.length} jobs ✓${skipped>0?` (${skipped} duplicates skipped)`:""}`);}
+          else notify(msg,"err");
         };
         doBatches();
-      } catch { notify("Import failed — check file format","err"); }
+      } catch{ notify("Import failed — check file format","err"); }
     };
     reader.readAsArrayBuffer(file); e.target.value="";
   }
 
   // ── Stats ─────────────────────────────────────────────────────────────────
   const stats = STATUS.reduce((a,s)=>{a[s]=baseVisible.filter(j=>j.status===s).length;return a},{});
-  const overdue = jobs.filter(j=>j.deadline&&daysDiff(j.deadline)<0&&!["Rejected","Withdrawn","Offer"].includes(j.status)).length;
-  const soonDue = jobs.filter(j=>j.deadline&&daysDiff(j.deadline)>=0&&daysDiff(j.deadline)<=7&&!["Rejected","Withdrawn","Offer"].includes(j.status)).length;
-
+  const overdue  = jobs.filter(j=>j.deadline&&daysDiff(j.deadline)<0&&!["Rejected","Withdrawn","Offer"].includes(j.status)).length;
+  const soonDue  = jobs.filter(j=>j.deadline&&daysDiff(j.deadline)>=0&&daysDiff(j.deadline)<=7&&!["Rejected","Withdrawn","Offer"].includes(j.status)).length;
   const filteredGmail = gmailEmails.filter(e=>gmailFilter==="all"||e.status===gmailFilter);
 
   // ─────────────────────────────────────────────────────────────────────────
@@ -594,7 +561,7 @@ Return JSON array where objects have: company, jobTitle, status (Applied, Screen
         .kb-drop{transition:background .15s}
         .kb-drop.over{background:#0a1628!important}
         .hbtn:hover{opacity:.75}
-        .email-card{transition:all .2s;position:relative;overflow:hidden}
+        .email-card{transition:all .2s}
         .email-card:hover{border-color:#2563eb!important;transform:translateX(2px)}
         .gtab{padding:5px 13px;border-radius:20px;font-size:11px;font-weight:600;cursor:pointer;border:1px solid rgba(99,150,210,0.2);background:transparent;color:#64748b;font-family:inherit;transition:all .2s}
         .gtab:hover{border-color:#06b6d4;color:#06b6d4}
@@ -616,8 +583,9 @@ Return JSON array where objects have: company, jobTitle, status (Applied, Screen
             <p style={{color:"#1e293b",fontSize:11,margin:"0 0 0 31px"}}>Search · Track · Gmail · Export</p>
           </div>
           <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
-            <Btn onClick={() => setShowSettings(true)}>⚙️ Settings</Btn>
-            <Btn onClick={() => supabase.auth.signOut()} v="red">⏏️ Logout</Btn>
+            <Btn onClick={()=>setShowSearch(true)} v="cyn">🔍 AI Search</Btn>
+            <Btn onClick={()=>setShowSettings(true)}>⚙️ Settings</Btn>
+            <Btn onClick={()=>supabase.auth.signOut()} v="red">⏏️ Logout</Btn>
             <Btn onClick={openAdd}>＋ Add Job</Btn>
             <Btn onClick={()=>fileRef.current.click()}>📂 Import</Btn>
             <Btn onClick={exportXLSX} v="grn">📥 Export Excel</Btn>
@@ -685,7 +653,7 @@ Return JSON array where objects have: company, jobTitle, status (Applied, Screen
               <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
                 <thead>
                   <tr style={{background:"#07101f",borderBottom:"1px solid #0a1628"}}>
-                    {[["title","Role",200],["company","Company",120],["location","Location",100],["salary","Salary",90],["status","Status",120],["priority","Pri",55],["deadline","Deadline",100],["applieddate","Applied",85],["","Actions",100]].map(([k,h,w])=>(
+                    {[["title","Role",200],["company","Company",120],["location","Location",100],["salary","Salary",90],["status","Status",120],["priority","Pri",55],["deadline","Deadline",100],["applieddate","Applied",85],["","Actions",130]].map(([k,h,w])=>(
                       <th key={h} onClick={k?()=>toggleSort(k):undefined} style={{padding:"9px 12px",color:"#1e293b",fontWeight:700,fontSize:10,letterSpacing:"0.08em",textAlign:"left",cursor:k?"pointer":"default",minWidth:w,userSelect:"none"}}>{h}{k&&<span style={{marginLeft:3}}>{sIcon(k)}</span>}</th>
                     ))}
                   </tr>
@@ -753,8 +721,8 @@ Return JSON array where objects have: company, jobTitle, status (Applied, Screen
                         <div style={{marginTop:6,display:"flex",gap:4,alignItems:"center"}}>
                           <PriBadge p={job.priority}/>
                           <div style={{marginLeft:"auto",display:"flex",gap:4}}>
-                            {job.applylink && <a href={job.applylink} target="_blank" rel="noreferrer" style={{background:"#1d4ed8",borderRadius:5,padding:"2px 8px",color:"#fff",textDecoration:"none",fontSize:9,fontWeight:700,display:"flex",alignItems:"center"}}>Apply ↗</a>}
-                            <button onClick={()=>doPrep(job)} style={{background:"#0f172a",border:"1px solid #1e293b",borderRadius:5,padding:"2px 6px",color:"#334155",cursor:"pointer",fontSize:9}}>🎙 Prep</button>
+                            {job.applylink&&<a href={job.applylink} target="_blank" rel="noreferrer" style={{background:"#1d4ed8",borderRadius:5,padding:"2px 8px",color:"#fff",textDecoration:"none",fontSize:9,fontWeight:700}}>Apply ↗</a>}
+                            <button onClick={()=>doPrep(job)} style={{background:"#0f172a",border:"1px solid #1e293b",borderRadius:5,padding:"2px 6px",color:"#334155",cursor:"pointer",fontSize:9}}>🎙</button>
                             <button onClick={()=>openEdit(job)} style={{background:"#0f172a",border:"1px solid #1e293b",borderRadius:5,padding:"2px 6px",color:"#334155",cursor:"pointer",fontSize:9}}>✏️</button>
                           </div>
                         </div>
@@ -830,7 +798,6 @@ Return JSON array where objects have: company, jobTitle, status (Applied, Screen
         {/* ══ GMAIL SCANNER ══ */}
         {tab==="gmail"&&(
           <div>
-            {/* Scan Panel */}
             <div style={{background:"#07101f",border:"1px solid #1e293b",borderRadius:16,padding:24,marginBottom:20}}>
               <div style={{color:"#06b6d4",fontWeight:700,fontSize:14,marginBottom:16,display:"flex",alignItems:"center",gap:8}}>
                 🔍 Scan Gmail for Job Replies
@@ -847,18 +814,16 @@ Return JSON array where objects have: company, jobTitle, status (Applied, Screen
                 </Btn>
                 <Btn onClick={()=>{setGmailEmails([]);setGmailStats(null);setGmailStatus({msg:"Cleared.",type:""});setGmailRows([{id:1,date:"",company:"",jobTitle:"",status:"Applied",interviewDate:"",interviewTime:"",interviewType:"",notes:""}]);}}>✕ Clear</Btn>
               </div>
-              {/* Status bar */}
               <div style={{background:"#0a111e",border:"1px solid #1e293b",borderRadius:10,padding:"12px 16px",fontFamily:"'JetBrains Mono',monospace",fontSize:12,minHeight:44,display:"flex",alignItems:"center",gap:10,
                 color:gmailStatus.type==="error"?"#ef4444":gmailStatus.type==="success"?"#10b981":gmailStatus.type==="loading"?"#f59e0b":"#06b6d4"}}>
                 {gmailStatus.type==="loading"&&<span style={{display:"inline-block",animation:"spin 0.8s linear infinite",flexShrink:0}}>◌</span>}
                 <span>{gmailStatus.msg}</span>
               </div>
               <div style={{background:"rgba(6,182,212,0.06)",border:"1px solid rgba(6,182,212,0.18)",borderRadius:10,padding:"10px 14px",marginTop:12,fontSize:12,color:"#06b6d4",display:"flex",gap:8}}>
-                💡 <span>After scanning, job emails appear below. Click <strong>"+ Add to Tracker"</strong> on any card to sync it to your Table view and export to Excel.</span>
+                💡 <span>After scanning, job emails appear below. Click <strong>"+ Add to Tracker"</strong> on any card to sync it.</span>
               </div>
             </div>
 
-            {/* Gmail Stats */}
             {gmailStats&&(
               <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(110px,1fr))",gap:10,marginBottom:20}}>
                 {[["Emails Found",gmailStats.total,"#60a5fa"],["Applied",gmailStats.applied,"#f59e0b"],["Interviews",gmailStats.interview,"#06b6d4"],["Offers",gmailStats.offer,"#10b981"],["Rejected",gmailStats.rejected,"#ef4444"],["Pending",gmailStats.pending,"#8b5cf6"]].map(([l,v,c])=>(
@@ -870,7 +835,6 @@ Return JSON array where objects have: company, jobTitle, status (Applied, Screen
               </div>
             )}
 
-            {/* Filter tabs */}
             {gmailEmails.length>0&&(
               <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14,flexWrap:"wrap",gap:10}}>
                 <div style={{color:"#94a3b8",fontWeight:600,fontSize:14}}>📨 Email Results</div>
@@ -882,13 +846,12 @@ Return JSON array where objects have: company, jobTitle, status (Applied, Screen
               </div>
             )}
 
-            {/* Email Cards */}
             {filteredGmail.length>0&&(
               <div style={{display:"flex",flexDirection:"column",gap:10,marginBottom:24}}>
                 {filteredGmail.map((email,i)=>{
-                  const sc = GMAIL_STATUS_COLORS[email.status]||GMAIL_STATUS_COLORS["Pending"];
-                  const initials = (email.company||"?").substring(0,2).toUpperCase();
-                  const dateStr = email.date?new Date(email.date).toLocaleDateString("en-IN",{day:"numeric",month:"short",year:"numeric"}):"";
+                  const sc=GMAIL_STATUS_COLORS[email.status]||GMAIL_STATUS_COLORS["Pending"];
+                  const initials=(email.company||"?").substring(0,2).toUpperCase();
+                  const dateStr=email.date?new Date(email.date).toLocaleDateString("en-IN",{day:"numeric",month:"short",year:"numeric"}):"";
                   return (
                     <div key={i} className="email-card" style={{background:"#07101f",border:"1px solid #1e293b",borderRadius:14,padding:18,borderLeft:`3px solid ${sc.accent}`}}>
                       <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:10,flexWrap:"wrap",gap:8}}>
@@ -910,7 +873,6 @@ Return JSON array where objects have: company, jobTitle, status (Applied, Screen
                           📅 Interview: {email.interviewDate}
                           {email.interviewTime&&` at ${email.interviewTime}`}
                           {email.interviewType&&` — ${email.interviewType}`}
-                          {email.interviewLink&&<a href={email.interviewLink} target="_blank" rel="noreferrer" style={{color:"#60a5fa",marginLeft:8}}>Join Link →</a>}
                         </div>
                       )}
                       <div style={{display:"flex",gap:14,flexWrap:"wrap"}}>
@@ -943,12 +905,7 @@ Return JSON array where objects have: company, jobTitle, status (Applied, Screen
                     {gmailRows.map((row,i)=>(
                       <tr key={row.id} style={{borderBottom:"1px solid #07101f"}}>
                         <td style={{padding:"8px 12px",color:"#334155",fontSize:11}}>{row.id}</td>
-                        {["date","company","jobTitle","interviewDate","interviewTime","interviewType","notes"].slice(0,1).map(k=>(
-                          <td key={k} style={{padding:"4px 8px"}}>
-                            <input value={row[k]} onChange={e=>setGmailRows(rs=>rs.map((r,j)=>j===i?{...r,[k]:e.target.value}:r))} placeholder="YYYY-MM-DD"
-                              style={{background:"transparent",border:"none",color:"#e2e8f0",fontFamily:"inherit",fontSize:12,width:"100%",outline:"none",padding:"2px 0"}}/>
-                          </td>
-                        ))}
+                        <td style={{padding:"4px 8px"}}><input value={row.date} onChange={e=>setGmailRows(rs=>rs.map((r,j)=>j===i?{...r,date:e.target.value}:r))} placeholder="YYYY-MM-DD" style={{background:"transparent",border:"none",color:"#e2e8f0",fontFamily:"inherit",fontSize:12,width:"100%",outline:"none",padding:"2px 0"}}/></td>
                         <td style={{padding:"4px 8px"}}><input value={row.company} onChange={e=>setGmailRows(rs=>rs.map((r,j)=>j===i?{...r,company:e.target.value}:r))} placeholder="Company" style={{background:"transparent",border:"none",color:"#e2e8f0",fontFamily:"inherit",fontSize:12,width:"100%",outline:"none",padding:"2px 0"}}/></td>
                         <td style={{padding:"4px 8px"}}><input value={row.jobTitle} onChange={e=>setGmailRows(rs=>rs.map((r,j)=>j===i?{...r,jobTitle:e.target.value}:r))} placeholder="Job title" style={{background:"transparent",border:"none",color:"#e2e8f0",fontFamily:"inherit",fontSize:12,width:"100%",outline:"none",padding:"2px 0"}}/></td>
                         <td style={{padding:"4px 8px"}}>
@@ -975,13 +932,16 @@ Return JSON array where objects have: company, jobTitle, status (Applied, Screen
 
       {/* ═══ MODALS ═══ */}
 
+      {/* Settings */}
       {showSettings&&(
         <Modal title="⚙️ AI & Integrations Settings" onClose={()=>setShowSettings(false)}>
-          <F label="API / Proxy Key *"><Inp type="password" value={geminiKey} onChange={e=>setGeminiKey(e.target.value)} placeholder="sk-..."/></F>
-          <F label="Proxy Base URL"><Inp value={proxyUrl} onChange={e=>setProxyUrl(e.target.value)} placeholder="http://10.151.72.225:8045/v1/chat/completions"/></F>
-          <F label="AI Model Name"><Inp value={aiModel} onChange={e=>setAiModel(e.target.value)} placeholder="gemini-3-pro-high"/></F>
-          <F label="Google Client ID (optional, for Gmail Scanner)"><Inp value={clientId} onChange={e=>setClientId(e.target.value)} placeholder="...apps.googleusercontent.com"/></F>
-          <div style={{color:"#94a3b8", fontSize:11, marginBottom:16, lineHeight:1.5}}>* AI Key and config are saved securely entirely in your browser.</div>
+          <F label="API / Proxy Key *"><Inp type="password" value={geminiKey} onChange={e=>setGeminiKey(e.target.value)} placeholder="sk-…"/></F>
+          <F label="Proxy Base URL"><Inp value={proxyUrl} onChange={e=>setProxyUrl(e.target.value)} placeholder="http://host:port/v1/chat/completions"/></F>
+          <F label="AI Model Name"><Inp value={aiModel} onChange={e=>setAiModel(e.target.value)} placeholder="gemini-2.5-flash"/></F>
+          <F label="Google Client ID (for Gmail Scanner)"><Inp value={clientId} onChange={e=>setClientId(e.target.value)} placeholder="…apps.googleusercontent.com"/></F>
+          <div style={{color:"#475569",fontSize:11,marginBottom:16,lineHeight:1.5,padding:"10px 12px",background:"#0a111e",borderRadius:8,border:"1px solid #1e293b"}}>
+            ℹ️ API key and settings are stored in your browser only (localStorage) and never sent to our servers.
+          </div>
           <Btn v="pri" onClick={saveSettings} sx={{width:"100%",justifyContent:"center",padding:"11px"}}>Save Settings</Btn>
         </Modal>
       )}
@@ -1008,17 +968,17 @@ Return JSON array where objects have: company, jobTitle, status (Applied, Screen
         </Modal>
       )}
 
-      {/* AI Search (FIXED) */}
+      {/* AI Job Search */}
       {showSearch&&(
         <Modal title="🔍 AI Job Search" onClose={()=>{setShowSearch(false);setSr([]);setSq("");}}>
-          <p style={{color:"#334155",fontSize:12,margin:"0 0 12px"}}>Claude generates realistic job listings from LinkedIn, Naukri, Indeed, Internshala & more based on your query.</p>
+          <p style={{color:"#64748b",fontSize:12,margin:"0 0 12px"}}>AI generates realistic job listings based on your query. Configure your API key in Settings first.</p>
           <div style={{display:"flex",gap:8,marginBottom:12}}>
             <Inp value={sq} onChange={e=>setSq(e.target.value)} onKeyDown={e=>e.key==="Enter"&&doSearch()} placeholder='e.g. "IT fresher jobs 2026 Tamil Nadu"' sx={{flex:1}}/>
             <Btn v="pri" onClick={doSearch} disabled={sLoad}>{sLoad?"Searching…":"Search"}</Btn>
           </div>
           {sLoad&&<div style={{textAlign:"center",padding:"28px",color:"#334155"}}>
             <div style={{fontSize:28,display:"inline-block",animation:"spin 1.2s linear infinite"}}>🔍</div>
-            <p style={{fontSize:11,marginTop:8}}>Claude is finding jobs…</p>
+            <p style={{fontSize:11,marginTop:8}}>Finding jobs…</p>
           </div>}
           {sErr&&<div style={{background:"#2a0a0a",border:"1px solid #7f1d1d",borderRadius:8,padding:"10px 14px",color:"#f87171",fontSize:12,marginBottom:8}}>{sErr}</div>}
           {sr.length>0&&(
@@ -1060,7 +1020,7 @@ Return JSON array where objects have: company, jobTitle, status (Applied, Screen
           </div>}
           <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
             {showDetail.applylink&&<a href={showDetail.applylink} target="_blank" rel="noreferrer" style={{textDecoration:"none"}}><Btn v="pri">Apply Now ↗</Btn></a>}
-            <Btn onClick={()=>{addToCalendar(showDetail);setShowDetail(null);}}>📅 Add to Calendar</Btn>
+            <Btn onClick={()=>{addToCalendar(showDetail);setShowDetail(null);}}>📅 Calendar</Btn>
             <Btn onClick={()=>{doPrep(showDetail);setShowDetail(null);}}>🎙 Interview Prep</Btn>
             <Btn onClick={()=>{setShowCover(showDetail);setCoverOut("");setShowDetail(null);}}>✉ Cover Letter</Btn>
           </div>
@@ -1070,13 +1030,13 @@ Return JSON array where objects have: company, jobTitle, status (Applied, Screen
       {/* Interview Prep */}
       {showPrep&&(
         <Modal title={`🎙 Interview Prep — ${showPrep.title}`} onClose={()=>{setShowPrep(null);setPrepOut("");}} wide>
-          {prepLoad&&<div style={{textAlign:"center",padding:"28px",color:"#334155"}}><div style={{fontSize:28,display:"inline-block",animation:"spin 1.2s linear infinite"}}>⚡</div><p style={{fontSize:11,marginTop:8}}>Claude is generating your prep guide…</p></div>}
+          {prepLoad&&<div style={{textAlign:"center",padding:"28px",color:"#334155"}}><div style={{fontSize:28,display:"inline-block",animation:"spin 1.2s linear infinite"}}>⚡</div><p style={{fontSize:11,marginTop:8}}>Generating prep guide…</p></div>}
           {!prepLoad&&prepOut&&<div style={{background:"#0a111e",border:"1px solid #1e293b",borderRadius:10,padding:16,whiteSpace:"pre-wrap",lineHeight:1.75,fontSize:13,color:"#94a3b8",maxHeight:500,overflowY:"auto"}}>{prepOut}</div>}
           {!prepOut&&!prepLoad&&<Btn v="pri" onClick={()=>doPrep(showPrep)}>⚡ Generate Prep Guide</Btn>}
           {prepOut&&!prepLoad&&<div style={{display:"flex",gap:8,marginTop:12}}>
             <Btn v="pri" onClick={()=>doPrep(showPrep)}>🔄 Regenerate</Btn>
             <Btn onClick={()=>{navigator.clipboard?.writeText(prepOut);notify("Copied ✓");}}>📋 Copy</Btn>
-            <Btn v="cyn" onClick={()=>saveToDrive(`Interview_Prep_${showPrep.company}.txt`, prepOut)}>📥 Save to Drive</Btn>
+            <Btn v="cyn" onClick={()=>saveToDrive(`Interview_Prep_${showPrep.company}.txt`,prepOut)}>📥 Save to Drive</Btn>
           </div>}
         </Modal>
       )}
@@ -1085,7 +1045,7 @@ Return JSON array where objects have: company, jobTitle, status (Applied, Screen
       {showCover&&(
         <Modal title={`✉ Cover Letter — ${showCover.title} @ ${showCover.company}`} onClose={()=>{setShowCover(null);setCoverOut("");}} wide>
           <F label="Your background (optional)">
-            <Txt value={bio} onChange={e=>setBio(e.target.value)} placeholder="e.g. Final year BE CSE student with ML and Python projects, seeking data roles…" rows={2}/>
+            <Txt value={bio} onChange={e=>setBio(e.target.value)} placeholder="e.g. Final year BE CSE student with ML and Python projects…" rows={2}/>
           </F>
           <Btn v="amb" onClick={()=>doCover(showCover)} disabled={coverLoad}>{coverLoad?"Generating…":"⚡ Generate Cover Letter"}</Btn>
           {coverLoad&&<div style={{textAlign:"center",padding:"20px",color:"#334155",animation:"pulse 1.2s infinite"}}>✍️ Writing your letter…</div>}
@@ -1094,7 +1054,7 @@ Return JSON array where objects have: company, jobTitle, status (Applied, Screen
               <div style={{background:"#0a111e",border:"1px solid #1e293b",borderRadius:10,padding:16,whiteSpace:"pre-wrap",lineHeight:1.8,fontSize:13,color:"#94a3b8",marginTop:14,maxHeight:460,overflowY:"auto"}}>{coverOut}</div>
               <div style={{display:"flex",gap:8,marginTop:12}}>
                 <Btn onClick={()=>{navigator.clipboard?.writeText(coverOut);notify("Copied ✓");}}>📋 Copy Letter</Btn>
-                <Btn v="cyn" onClick={()=>saveToDrive(`Cover_Letter_${showCover.company}.txt`, coverOut)}>📥 Save to Drive</Btn>
+                <Btn v="cyn" onClick={()=>saveToDrive(`Cover_Letter_${showCover.company}.txt`,coverOut)}>📥 Save to Drive</Btn>
                 <Btn onClick={()=>doCover(showCover)}>🔄 Regenerate</Btn>
               </div>
             </>
