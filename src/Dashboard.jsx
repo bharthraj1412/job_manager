@@ -3,6 +3,7 @@ import { supabase } from "./supabase";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, PieChart, Pie, Cell } from "recharts";
 import * as XLSX from "xlsx";
 import ResumeBuilder, { cleanAI } from './ResumeBuilder';
+import Calendar from './Calendar';
 
 // ── Constants ──────────────────────────────────────────────────────────────
 const STATUS = ["Bookmarked", "Applied", "Interview", "Offer", "Rejected", "Withdrawn"];
@@ -2044,7 +2045,7 @@ Format: Professional letter. Opening hook, relevant experience paragraph, strong
       {/* TABS */}
       <div style={{ background: "#050d1a", borderBottom: "1px solid #0a1628", padding: "0 24px", overflowX: "auto" }}>
         <div style={{ maxWidth: 1480, margin: "0 auto", display: "flex" }}>
-          {[["table", "📋 Table"], ["kanban", "🗂 Kanban"], ["analytics", "📊 Analytics"], ["gmail", "📧 Gmail"], ["profile", "👤 Profile"], ["resume", "📄 Resume"], ["reports", "📨 Reports"]].map(([t, l]) => (
+          {[["table", "📋 Table"], ["kanban", "🗂 Kanban"], ["analytics", "📊 Analytics"], ["gmail", "📧 Gmail"], ["profile", "👤 Profile"], ["resume", "📄 Resume"], ["reports", "📨 Reports"], ["calendar", "📅 Calendar"]].map(([t, l]) => (
             <button key={t} onClick={() => setTab(t)} className={`nav-tab${tab === t ? " active" : ""}`}>
               {l}
               {t === "profile" && profileComplete < 3 && <span style={{ background: "rgba(245,158,11,0.15)", border: "1px solid rgba(245,158,11,0.3)", color: "#fbbf24", padding: "1px 6px", borderRadius: 999, fontSize: 9, fontWeight: 700 }}>Setup</span>}
@@ -2661,6 +2662,9 @@ After uploading/pasting, click Parse Resume to auto-fill your profile." rows={7}
             <Btn v="pri" onClick={saveSettings}>💾 Save All Settings</Btn>
           </div>
         </div>}
+
+        {/* CALENDAR */}
+        {tab === "calendar" && <Calendar jobs={jobs} session={session} notify={notify} />}
 
       </div>
 
