@@ -2,7 +2,7 @@ import { useState, useRef, useEffect, useCallback } from "react";
 import { supabase } from "./supabase";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, PieChart, Pie, Cell } from "recharts";
 import * as XLSX from "xlsx";
-import ResumeBuilder from './ResumeBuilder';
+import ResumeBuilder, { cleanAI } from './ResumeBuilder';
 
 // ── Constants ──────────────────────────────────────────────────────────────
 const STATUS = ["Bookmarked", "Applied", "Interview", "Offer", "Rejected", "Withdrawn"];
@@ -39,6 +39,24 @@ const EXPERIENCE_LEVELS = [
   { value: "senior", label: "Senior / 5+ yrs", color: "#f59e0b", keywords: "senior lead principal 5 6 7 years" },
   { value: "manager", label: "Manager / Lead", color: "#f87171", keywords: "manager lead head director" },
 ];
+
+function filterByExperience(results, expValue) {
+  if (!expValue) return results;
+  const level = EXPERIENCE_LEVELS.find(e => e.value === expValue);
+  if (!level) return results;
+  const excludeKeywords = {
+    fresher: ["senior","lead","principal","manager","head of","director","7+ years","10+ years","5+ years experience"],
+    junior:  ["senior","principal","director","10+ years"],
+    mid:     [],
+    senior:  ["fresher","entry level","graduate trainee","0-1 year"],
+    manager: ["fresher","entry level","junior","associate"]
+  }[expValue] || [];
+  if (!excludeKeywords.length) return results;
+  return results.filter(r => {
+    const text = `${r.title} ${r.description || ''}`.toLowerCase();
+    return !excludeKeywords.some(k => text.includes(k.toLowerCase()));
+  });
+}
 
 const NVIDIA_API_URL = '/api/ai';
 const NVIDIA_MODEL   = import.meta.env.VITE_AI_MODEL || 'meta/llama-3.1-70b-instruct';
@@ -130,6 +148,60 @@ async function callAI(prompt, sys = '', apiKeyOverride, modelOverride, proxyOver
   const d = await r.json();
   if (d.error) throw new Error(typeof d.error === 'string' ? d.error : (d.error.message || JSON.stringify(d.error)));
   return d.choices?.[0]?.message?.content || '';
+}
+
+async function scrapeJobFromURL(url, aiFunc) {
+  const readerUrl = `https://r.jina.ai/${url}`;
+  let pageText = '';
+  try {
+    const res = await fetch(readerUrl, { 
+      headers: { Accept: 'text/plain' }, 
+      signal: AbortSignal.timeout(15000) 
+    });
+    pageText = await res.text();
+  } catch (err) {
+    throw new Error(`Could not fetch URL: ${err.message}`);
+  }
+  if (!pageText || pageText.length < 100) throw new Error('No content found at this URL');
+
+  const result = await aiFunc(
+    `Extract job posting information from this webpage and return ONLY valid JSON (no markdown):
+{
+  "title": "exact job title",
+  "company": "company name", 
+  "location": "location or Remote",
+  "type": "Full-time or Part-time or Internship or Contract or Freelance",
+  "salary": "salary if mentioned else empty string",
+  "skills": "comma-separated skills found",
+  "deadline": "YYYY-MM-DD if found else empty string",
+  "notes": "key requirements summary max 400 chars",
+  "applylink": "${url}"
+}
+
+Webpage content:
+${pageText.slice(0, 5000)}`,
+    'Return ONLY valid JSON. No markdown.'
+  );
+
+  const clean = result.replace(/```json|```/g, '').trim();
+  const match = clean.match(/\{[\s\S]*\}/);
+  if (!match) throw new Error('Could not parse job data');
+  const parsed = JSON.parse(match[0]);
+  return {
+    title: parsed.title || 'Unknown Role',
+    company: parsed.company || 'Unknown Company',
+    location: parsed.location || '',
+    type: ['Full-time','Part-time','Internship','Contract','Freelance'].includes(parsed.type) ? parsed.type : 'Full-time',
+    salary: parsed.salary || '',
+    skills: parsed.skills || '',
+    deadline: parsed.deadline || '',
+    notes: parsed.notes || '',
+    applylink: url,
+    status: 'Bookmarked',
+    priority: 'Medium',
+    source: 'URL Import',
+    applieddate: '',
+  };
 }
 
 // ── Gmail / Drive Helpers ────────────────────────────────────────────────────
@@ -1083,6 +1155,11 @@ export default function Dashboard({ session }) {
     try { return JSON.parse(localStorage.getItem('autoAppliedJobs') || '[]'); } catch { return []; }
   });
   const [showAutoApplyLog, setShowAutoApplyLog] = useState(false);
+  const [showURLScraper,setShowURLScraper]=useState(false);
+  const [scrapeURL,setScrapeURL]=useState("");
+  const [scrapeLoading,setScrapeLoading]=useState(false);
+  const [scrapeResult,setScrapeResult]=useState(null);
+  const [scrapeError,setScrapeError]=useState("");
 
   // ── Form ──
   const blank = { title: "", company: "", location: "", type: "Full-time", salary: "", skills: "", source: "", applylink: "", status: "Bookmarked", applieddate: "", deadline: "", notes: "", priority: "Medium" };
@@ -1287,7 +1364,9 @@ export default function Dashboard({ session }) {
   async function loadProfile() {
     const { data, error } = await supabase.from("profiles").select("*").eq("id", session.user.id).maybeSingle();
     if (data) {
-      setProfile(p => ({ ...p, ...data }));
+      let projects=[];
+      try{ projects=data.projects?JSON.parse(data.projects):[]; }catch{ projects=[]; }
+      setProfile(p => ({ ...p, ...data, projects }));
       if (data.skills) setBio(`${data.headline || ""}\n${data.summary || ""}`);
     }
     // error is fine here — means no profile row yet, user will create one
@@ -1295,7 +1374,7 @@ export default function Dashboard({ session }) {
 
   async function saveProfile() {
     setProfileSaving(true);
-    const payload = { ...profile, id: session.user.id, updated_at: new Date().toISOString() };
+    const payload = { ...profile, id: session.user.id, projects: JSON.stringify(profile.projects||[]), updated_at: new Date().toISOString() };
     const { error } = await supabase.from("profiles").upsert(payload);
     if (!error) notify("Profile saved ✓");
     else notify(error.message, "err");
@@ -1580,7 +1659,8 @@ ${resumeText.slice(0, 8000)}`,
       if (!res.ok) throw new Error(`Adzuna error ${res.status}`);
       const data = await res.json();
       if (!data.results?.length) { setSErr("No results — try different keywords."); setSLoad(false); return; }
-      const mapped = mapAdzuna(data.results);
+      let mapped = mapAdzuna(data.results);
+      mapped = filterByExperience(mapped, sExperience);
       if (reset) { setSr(mapped); setSPage(1); } else { setSr(p => [...p, ...mapped]); setSPage(p => p + 1); }
       if (data.count) setSTotalResults(data.count);
     } catch (err) { setSErr(err.message); }
@@ -1601,6 +1681,26 @@ ${resumeText.slice(0, 8000)}`,
     if (!error) { fetchJobs(); notify(`"${r.title}" bookmarked ✓`); } else notify(error.message, "err");
   }
 
+  // ── URL Scraper ───────────────────────────────────────────────────────
+  async function doScrapeURL() {
+    if(!scrapeURL.trim())return setScrapeError("Please enter a URL");
+    let url=scrapeURL.trim();
+    if(!url.startsWith("http"))url="https://"+url;
+    setScrapeLoading(true); setScrapeError(""); setScrapeResult(null);
+    try{
+      const result=await scrapeJobFromURL(url,AI);
+      setScrapeResult(result);
+    }catch(err){setScrapeError(err.message);}
+    setScrapeLoading(false);
+  }
+  async function addScrapedJob(){
+    if(!scrapeResult)return;
+    const payload={...scrapeResult,user_id:session.user.id};
+    const{error}=await supabase.from("jobs").insert([payload]);
+    if(!error){fetchJobs();notify(`"${scrapeResult.title}" added ✓`);setShowURLScraper(false);setScrapeResult(null);setScrapeURL("");}
+    else notify(error.message,"err");
+  }
+
   // ── AI Features ───────────────────────────────────────────────────────
   async function doPrep(job) {
     if (!job) return;
@@ -1612,7 +1712,7 @@ ${resumeText.slice(0, 8000)}`,
 Include: 6 technical Q&A (skills: ${job.skills || "general"}), 3 STAR behavioral Qs with sample answers, 3 questions to ask interviewer, 5 key prep tasks.`,
         "You are an expert career coach. Be specific and actionable."
       );
-      setPrepOut(t);
+      setPrepOut(cleanAI(t));
     } catch (err) { setPrepOut("Error: " + err.message); }
     setPrepLoad(false);
   }
@@ -1626,7 +1726,7 @@ Include: 6 technical Q&A (skills: ${job.skills || "general"}), 3 STAR behavioral
         `Write a professional cover letter for: Role: ${job.title} at ${job.company} (${job.location}). Skills needed: ${job.skills || "general"}. Candidate: ${profileCtx}. Be specific, genuine, 3 strong paragraphs.`,
         "You are a professional career writer. No clichés."
       );
-      setCoverOut(t);
+      setCoverOut(cleanAI(t));
     } catch (err) { setCoverOut("Error: " + err.message); }
     setCoverLoad(false);
   }
@@ -1842,6 +1942,7 @@ Format: Professional letter. Opening hook, relevant experience paragraph, strong
   const overdue = jobs.filter(j => j.deadline && daysDiff(j.deadline) < 0 && !["Rejected", "Withdrawn", "Offer"].includes(j.status)).length;
   const soonDue = jobs.filter(j => j.deadline && daysDiff(j.deadline) >= 0 && daysDiff(j.deadline) <= 7 && !["Rejected", "Withdrawn", "Offer"].includes(j.status)).length;
   const filteredGmail = gmailEmails.filter(e => gmailFilter === "all" || e.status === gmailFilter);
+  const needFollowup=jobs.filter(j=>j.status==="Applied"&&j.applieddate&&Math.abs(daysDiff(j.applieddate))>=7).length;
   const activeFilters = [sLocation, sJobType !== "all" ? sJobType : "", sSalaryMin, sCategory, sExperience].filter(Boolean).length;
   const profileComplete = [profile.full_name, profile.skills, profile.headline].filter(Boolean).length;
 
@@ -1896,6 +1997,7 @@ Format: Professional letter. Opening hook, relevant experience paragraph, strong
                 </span>
               )}
             </Btn>
+            <Btn v="vio" onClick={()=>{setShowURLScraper(true);setScrapeURL("");setScrapeResult(null);setScrapeError("");}}>🔗 Import URL</Btn>
             <Btn onClick={() => setShowSearch(true)} v="cyn">🔍 Find Jobs</Btn>
             <Btn onClick={() => setShowSettings(true)} v="ghost">⚙️</Btn>
             <Btn onClick={() => supabase.auth.signOut()} v="red">⏏️</Btn>
@@ -1909,10 +2011,11 @@ Format: Professional letter. Opening hook, relevant experience paragraph, strong
       </div>
 
       {/* ALERT BAR */}
-      {(overdue > 0 || soonDue > 0) && <div style={{ background: "#050d1a", borderBottom: "1px solid #0a1628", padding: "7px 24px" }}>
+      {(overdue > 0 || soonDue > 0 || needFollowup > 0) && <div style={{ background: "#050d1a", borderBottom: "1px solid #0a1628", padding: "7px 24px" }}>
         <div style={{ maxWidth: 1480, margin: "0 auto", display: "flex", gap: 10, flexWrap: "wrap" }}>
           {overdue > 0 && <span style={{ background: "rgba(220,38,38,0.08)", border: "1px solid #7f1d1d", color: "#f87171", padding: "3px 12px", borderRadius: 999, fontSize: 11, fontWeight: 700 }}>🔴 {overdue} deadline{overdue > 1 ? "s" : ""} overdue</span>}
           {soonDue > 0 && <span style={{ background: "rgba(245,158,11,0.08)", border: "1px solid #78350f", color: "#fbbf24", padding: "3px 12px", borderRadius: 999, fontSize: 11, fontWeight: 700 }}>⏰ {soonDue} due this week</span>}
+          {needFollowup>0&&<span style={{background:"rgba(139,92,246,0.08)",border:"1px solid rgba(139,92,246,0.3)",color:"#a78bfa",padding:"3px 12px",borderRadius:999,fontSize:11,fontWeight:700}}>📨 {needFollowup} need follow-up (7+ days)</span>}
           {autoReport && <span style={{ background: "rgba(99,102,241,0.08)", border: "1px solid rgba(99,102,241,0.2)", color: "#818cf8", padding: "3px 12px", borderRadius: 999, fontSize: 11, fontWeight: 700 }}>📧 Auto-report ON at {reportTime}</span>}
         </div>
       </div>}
@@ -2041,6 +2144,9 @@ Format: Professional letter. Opening hook, relevant experience paragraph, strong
                         </div>
                         {job.skills && <div style={{ color: "#334155", fontSize: 10 }}>{job.skills.split(",").slice(0, 3).join(" · ")}</div>}
                         {profile.skills && <MatchBadge score={calcMatchScore(job.skills, profile.skills)} />}
+                        {job.status==="Applied"&&job.applieddate&&Math.abs(daysDiff(job.applieddate))>=7&&(
+                          <span style={{marginLeft:6,background:"rgba(139,92,246,0.15)",border:"1px solid rgba(139,92,246,0.3)",color:"#a78bfa",padding:"1px 6px",borderRadius:999,fontSize:9,fontWeight:700}}>📨 Follow up</span>
+                        )}
                       </td>
                       <td style={{ padding: "11px 13px", color: "#94a3b8", fontWeight: 500 }}>{job.company}</td>
                       <td style={{ padding: "11px 13px", color: "#475569", whiteSpace: "nowrap", fontSize: 11 }}>{job.location}</td>
@@ -2359,6 +2465,28 @@ After uploading/pasting, click Parse Resume to auto-fill your profile." rows={7}
                 </div>
               </div>}
             </div>
+          </div>
+          {/* Projects */}
+          <div style={{background:"#06101e",border:"1px solid #1e2d45",borderRadius:16,padding:22,marginBottom:20}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
+              <div style={{color:"#fde047",fontSize:13,fontWeight:700}}>🚀 Projects</div>
+              <Btn v="amb" onClick={()=>setProfile(p=>({...p,projects:[...(p.projects||[]),{name:"",description:"",tech:"",url:""}]}))}>＋ Add Project</Btn>
+            </div>
+            {(profile.projects||[]).map((proj,i)=>(
+              <div key={i} style={{background:"#070f1c",border:"1px solid #1e2d45",borderRadius:12,padding:16,marginBottom:12}}>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
+                  <span style={{color:"#fde047",fontSize:11,fontWeight:700}}>Project {i+1}{proj.name?` — ${proj.name}`:""}</span>
+                  <button onClick={()=>setProfile(p=>({...p,projects:(p.projects||[]).filter((_,j)=>j!==i)}))} style={{background:"rgba(220,38,38,0.08)",border:"1px solid #450a0a",color:"#f87171",borderRadius:7,padding:"3px 8px",cursor:"pointer",fontSize:11,fontFamily:"inherit"}}>✕ Remove</button>
+                </div>
+                <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,marginBottom:10}}>
+                  <F label="Project Name"><Inp value={proj.name||""} onChange={e=>setProfile(p=>{const projects=[...(p.projects||[])];projects[i]={...projects[i],name:e.target.value};return{...p,projects};})} placeholder="My App"/></F>
+                  <F label="Tech Stack"><Inp value={proj.tech||""} onChange={e=>setProfile(p=>{const projects=[...(p.projects||[])];projects[i]={...projects[i],tech:e.target.value};return{...p,projects};})} placeholder="React, Node.js"/></F>
+                </div>
+                <F label="URL"><Inp value={proj.url||""} onChange={e=>setProfile(p=>{const projects=[...(p.projects||[])];projects[i]={...projects[i],url:e.target.value};return{...p,projects};})} placeholder="https://github.com/…"/></F>
+                <F label="Description"><Txt value={proj.description||""} onChange={e=>setProfile(p=>{const projects=[...(p.projects||[])];projects[i]={...projects[i],description:e.target.value};return{...p,projects};})} placeholder="What it does, what you built…" rows={2}/></F>
+              </div>
+            ))}
+            {(!profile.projects||profile.projects.length===0)&&<div style={{color:"#1e2d45",fontSize:12,textAlign:"center",padding:"20px",border:"1px dashed #1e2d45",borderRadius:10}}>No projects yet — click "Add Project"</div>}
           </div>
           <Btn v="pri" onClick={saveProfile} disabled={profileSaving} sx={{ width: "100%", justifyContent: "center", padding: "13px", fontSize: 14 }}>{profileSaving ? "Saving…" : "💾 Save Profile"}</Btn>
         </div>}
@@ -2777,6 +2905,39 @@ After uploading/pasting, click Parse Resume to auto-fill your profile." rows={7}
             <Btn v="ghost" onClick={() => doCover(showCover)}>🔄 Regenerate</Btn>
           </div>
         </>}
+      </Modal>}
+
+      {showURLScraper&&<Modal title="🔗 Import Job from URL" onClose={()=>setShowURLScraper(false)}>
+        <p style={{color:"#94a3b8",fontSize:13,lineHeight:1.7,marginBottom:14}}>
+          Paste any job posting URL — LinkedIn, Naukri, Indeed, company career pages. AI extracts all details.
+        </p>
+        <div style={{background:"rgba(139,92,246,0.06)",border:"1px solid rgba(139,92,246,0.18)",borderRadius:10,padding:"10px 14px",marginBottom:16,fontSize:11,color:"#a78bfa"}}>
+          ✨ Supported: LinkedIn Jobs · Naukri · Indeed · Internshala · Glassdoor · Any public job URL
+        </div>
+        <F label="Job Posting URL">
+          <Inp value={scrapeURL} onChange={e=>setScrapeURL(e.target.value)} placeholder="https://www.linkedin.com/jobs/view/… or any job URL"/>
+        </F>
+        {scrapeError&&<div style={{background:"rgba(220,38,38,0.06)",border:"1px solid #7f1d1d",borderRadius:8,padding:"10px 14px",color:"#f87171",fontSize:12,marginTop:10}}>{scrapeError}</div>}
+        <Btn v="vio" onClick={doScrapeURL} disabled={scrapeLoading||!scrapeURL.trim()} sx={{width:"100%",justifyContent:"center",padding:"12px",fontSize:13,marginTop:12,marginBottom:16}}>
+          {scrapeLoading?<><span style={{animation:"spin 0.8s linear infinite",display:"inline-block"}}>◌</span> Extracting…</>:"🔍 Extract Job Details"}
+        </Btn>
+        {scrapeResult&&<div style={{background:"#070f1c",border:"1px solid #1e2d45",borderRadius:14,padding:18,animation:"mi .2s ease"}}>
+          <div style={{color:"#86efac",fontSize:12,fontWeight:700,marginBottom:14}}>✓ Job Extracted!</div>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:14}}>
+            {[["Title",scrapeResult.title],["Company",scrapeResult.company],["Location",scrapeResult.location||"—"],["Type",scrapeResult.type],["Salary",scrapeResult.salary||"Not disclosed"],["Deadline",scrapeResult.deadline||"—"]].map(([k,v])=>(
+              <div key={k} style={{background:"#06101e",border:"1px solid #1e2d45",borderRadius:8,padding:"10px 12px"}}>
+                <div style={{color:"#334155",fontSize:9,fontWeight:700,textTransform:"uppercase",letterSpacing:"0.1em",marginBottom:3}}>{k}</div>
+                <div style={{color:"#94a3b8",fontSize:12}}>{v}</div>
+              </div>
+            ))}
+          </div>
+          {scrapeResult.skills&&<div style={{marginBottom:10}}><div style={{color:"#475569",fontSize:10,marginBottom:6,fontWeight:700,textTransform:"uppercase",letterSpacing:"0.08em"}}>Skills Detected</div><div style={{display:"flex",flexWrap:"wrap",gap:5}}>{scrapeResult.skills.split(",").filter(s=>s.trim()).map(sk=><span key={sk} style={{background:"rgba(99,102,241,0.1)",border:"1px solid rgba(99,102,241,0.2)",color:"#a5b4fc",padding:"2px 9px",borderRadius:999,fontSize:11}}>{sk.trim()}</span>)}</div></div>}
+          {profile.skills&&<div style={{background:"rgba(34,197,94,0.06)",border:"1px solid rgba(34,197,94,0.15)",borderRadius:8,padding:"8px 14px",marginBottom:14,fontSize:12,color:"#86efac"}}>⚡ Profile match: <strong>{calcMatchScore(scrapeResult.skills,profile.skills)}%</strong></div>}
+          <div style={{display:"flex",gap:8}}>
+            <Btn v="grn" onClick={addScrapedJob} sx={{flex:1,justifyContent:"center",padding:"11px",fontSize:13}}>+ Add to Tracker</Btn>
+            <Btn v="ghost" onClick={()=>{setScrapeResult(null);setScrapeURL("");}}>← Try Another URL</Btn>
+          </div>
+        </div>}
       </Modal>}
     </div>
   );
