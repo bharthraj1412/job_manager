@@ -2,14 +2,14 @@
 // ✅ SECURITY: Keys never leave server. Rate limiting. Restricted CORS.
 
 const RATE_LIMIT_WINDOW = 60 * 1000; // 1 minute
-const RATE_LIMIT_MAX = 20;         // max 20 requests per IP per minute
-const ipTimestamps = {};         // In production use Redis or Upstash
+const RATE_LIMIT_MAX    = 20;         // max 20 requests per IP per minute
+const ipTimestamps      = {};         // In production use Redis or Upstash
 
 export default async function handler(req, res) {
   // ── CORS ────────────────────────────────────────────────────────────
   const allowedOrigin = process.env.ALLOWED_ORIGIN || 'http://localhost:3000';
   const origin = req.headers.origin || '';
-
+  
   if (origin && origin !== allowedOrigin && !origin.includes('localhost')) {
     return res.status(403).json({ error: 'Forbidden origin' });
   }
@@ -19,10 +19,10 @@ export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
   if (req.method === 'OPTIONS') return res.status(200).end();
-  if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
+  if (req.method !== 'POST')   return res.status(405).json({ error: 'Method not allowed' });
 
   // ── Rate Limiting ────────────────────────────────────────────────────
-  const ip = req.headers['x-forwarded-for']?.split(',')[0] || 'unknown';
+  const ip  = req.headers['x-forwarded-for']?.split(',')[0] || 'unknown';
   const now = Date.now();
   if (!ipTimestamps[ip]) ipTimestamps[ip] = [];
   ipTimestamps[ip] = ipTimestamps[ip].filter(t => now - t < RATE_LIMIT_WINDOW);
@@ -48,17 +48,17 @@ export default async function handler(req, res) {
 
   try {
     const response = await fetch('https://integrate.api.nvidia.com/v1/chat/completions', {
-      method: 'POST',
+      method:  'POST',
       headers: {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${apiKey}`,
       },
       body: JSON.stringify({
-        model: model || 'deepseek-ai/deepseek-r1',
+        model:       model || 'deepseek-ai/deepseek-r1',
         messages,
         temperature: Math.min(temperature || 0.6, 1.0),
-        max_tokens: Math.min(max_tokens || 2048, 8192),
-        top_p: 0.7,
+        max_tokens:  Math.min(max_tokens || 2048, 8192),
+        top_p:       0.7,
       }),
     });
 

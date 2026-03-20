@@ -2,6 +2,7 @@ import { useState, useRef, useEffect, useCallback } from "react";
 import { supabase } from "./supabase";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, PieChart, Pie, Cell } from "recharts";
 import * as XLSX from "xlsx";
+import ResumeBuilder from './ResumeBuilder';
 
 // ── Constants ──────────────────────────────────────────────────────────────
 const STATUS = ["Bookmarked", "Applied", "Interview", "Offer", "Rejected", "Withdrawn"];
@@ -39,9 +40,8 @@ const EXPERIENCE_LEVELS = [
   { value: "manager", label: "Manager / Lead", color: "#f87171", keywords: "manager lead head director" },
 ];
 
-const NVIDIA_API_URL = "/api/ai";
-const NVIDIA_API_KEY = "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";
-const NVIDIA_MODEL = "deepseek-ai/deepseek-r1";
+const NVIDIA_API_URL = '/api/ai';
+const NVIDIA_MODEL   = import.meta.env.VITE_AI_MODEL || 'deepseek-ai/deepseek-r1';
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 const fmtDate = d => d ? new Date(d).toLocaleDateString("en-IN", { day: "numeric", month: "short" }) : "—";
@@ -75,20 +75,41 @@ function calcMatchScore(jobSkills, profileSkills) {
   return Math.round((matches.length / jSkills.length) * 100);
 }
 
-async function callAI(prompt, sysprompt = "", apiKey = NVIDIA_API_KEY, modelName = NVIDIA_MODEL, proxyUrl = NVIDIA_API_URL) {
-  if (!apiKey) throw new Error("API key required.");
+function extractEmailFromJob(job) {
+  const combined = `${job.notes || ''} ${job.source || ''}`;
+  const match = combined.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/);
+  return match ? match[0] : null;
+}
+
+function buildApplicationEmailHTML(job, coverLetter, prof) {
+  const name = prof.full_name || 'Candidate';
+  const lines = coverLetter.split('\n').filter(l => l.trim()).map(l => `<p style="margin:0 0 14px;line-height:1.7">${l}</p>`).join('');
+  return `<!DOCTYPE html><html><body style="font-family:Arial,sans-serif;color:#111;max-width:600px;margin:auto;padding:40px 20px">
+<p style="margin:0 0 20px">Dear Hiring Manager at ${job.company},</p>
+${lines}
+<p style="margin:20px 0 4px">Sincerely,<br><strong>${name}</strong></p>
+${prof.phone    ? `<p style="margin:0;color:#555;font-size:12px">${prof.phone}</p>` : ''}
+${prof.email    ? `<p style="margin:0;color:#555;font-size:12px">${prof.email}</p>` : ''}
+${prof.linkedin ? `<p style="margin:0;color:#555;font-size:12px">${prof.linkedin}</p>` : ''}
+${prof.portfolio? `<p style="margin:0;color:#555;font-size:12px">${prof.portfolio}</p>` : ''}
+<hr style="border:none;border-top:1px solid #eee;margin:20px 0">
+<p style="font-size:11px;color:#999">Applied via JobBoard Pro · ${new Date().toLocaleDateString()}</p>
+</body></html>`;
+}
+
+async function callAI(prompt, sys = '') {
   const messages = [];
-  if (sysprompt) messages.push({ role: "system", content: sysprompt });
-  messages.push({ role: "user", content: prompt });
-  const r = await fetch(proxyUrl, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
-    body: JSON.stringify({ model: modelName, messages, temperature: 0.6, top_p: 0.7, max_tokens: 4096 }),
+  if (sys) messages.push({ role: 'system', content: sys });
+  messages.push({ role: 'user', content: prompt });
+  const r = await fetch(NVIDIA_API_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model: NVIDIA_MODEL, messages, max_tokens: 4096 }),
   });
-  if (!r.ok) { const t = await r.text(); throw new Error(`API Error ${r.status}: ${t}`); }
+  if (!r.ok) { const t = await r.text(); throw new Error(`API ${r.status}: ${t}`); }
   const d = await r.json();
   if (d.error) throw new Error(d.error.message);
-  return d.choices?.[0]?.message?.content || "";
+  return d.choices?.[0]?.message?.content || '';
 }
 
 // ── Gmail / Drive Helpers ────────────────────────────────────────────────────
@@ -996,8 +1017,8 @@ export default function Dashboard({ session }) {
   const [clientId, setClientId] = useState(() => localStorage.getItem("googleClientId") || import.meta.env.VITE_GOOGLE_CLIENT_ID || "");
   const [aiModel, setAiModel] = useState(() => localStorage.getItem("aiModel") || NVIDIA_MODEL);
   const [proxyUrl, setProxyUrl] = useState(() => localStorage.getItem("proxyUrl") || NVIDIA_API_URL);
-  const [adzunaId, setAdzunaId] = useState(() => localStorage.getItem("adzunaId") || "538be205");
-  const [adzunaKey, setAdzunaKey] = useState(() => localStorage.getItem("adzunaKey") || "8821660cdab1e3b4a33c8ee8a23f3c3f");
+  const [adzunaId,  setAdzunaId]  = useState(() => localStorage.getItem('adzunaId')  || import.meta.env.VITE_ADZUNA_ID  || '');
+  const [adzunaKey, setAdzunaKey] = useState(() => localStorage.getItem('adzunaKey') || import.meta.env.VITE_ADZUNA_KEY || '');
   const [reportEmail, setReportEmail] = useState(() => localStorage.getItem("reportEmail") || session?.user?.email || "");
   const [autoReport, setAutoReport] = useState(() => localStorage.getItem("autoReport") === "true");
   const [reportTime, setReportTime] = useState(() => localStorage.getItem("reportTime") || "09:00");
@@ -1035,6 +1056,13 @@ export default function Dashboard({ session }) {
   const [showCover, setShowCover] = useState(null);
   const [showDetail, setShowDetail] = useState(null);
   const [showSettings, setShowSettings] = useState(false);
+
+  // ── Auto Apply ──
+  const [autoApplying, setAutoApplying]     = useState(null);
+  const [appliedJobs,  setAppliedJobs]      = useState(() => {
+    try { return JSON.parse(localStorage.getItem('autoAppliedJobs') || '[]'); } catch { return []; }
+  });
+  const [showAutoApplyLog, setShowAutoApplyLog] = useState(false);
 
   // ── Form ──
   const blank = { title: "", company: "", location: "", type: "Full-time", salary: "", skills: "", source: "", applylink: "", status: "Bookmarked", applieddate: "", deadline: "", notes: "", priority: "Medium" };
@@ -1583,6 +1611,78 @@ Include: 6 technical Q&A (skills: ${job.skills || "general"}), 3 STAR behavioral
     setCoverLoad(false);
   }
 
+  // ── Auto Apply Function ───────────────────────────────────────────────
+  async function autoApplyToJob(job) {
+    if (!job) return;
+    if (appliedJobs.some(a => a.jobId === job.id)) {
+      return notify('Already auto-applied to this job', 'err');
+    }
+
+    setAutoApplying(job.id);
+    notify(`⚡ Auto-applying to ${job.company}…`);
+
+    try {
+      // 1. Generate tailored cover letter
+      const profileCtx = profile.full_name
+        ? `Name: ${profile.full_name}. Headline: ${profile.headline || ''}. Skills: ${profile.skills || ''}. Summary: ${profile.summary || ''}. Experience: ${profile.experience?.slice(0, 300) || ''}. Education: ${profile.education || ''}.`
+        : bio || 'Experienced professional';
+
+      const coverLetter = await AI(
+        `Write a compelling, concise cover letter (3 paragraphs, max 250 words) for:
+Role: ${job.title} at ${job.company} (${job.location || 'Remote'})
+Required Skills: ${job.skills || 'general'}
+Candidate: ${profileCtx}
+
+Format: Professional letter. Opening hook, relevant experience paragraph, strong closing with CTA. No clichés.`,
+        'You are an expert cover letter writer. Be specific, genuine, results-focused.'
+      );
+
+      // 2. Detect apply method
+      const applyEmail = extractEmailFromJob(job);
+
+      if (applyEmail && clientId) {
+        // 3a. Send via Gmail API
+        const token = await getGoogleToken(
+          'https://www.googleapis.com/auth/gmail.send', session, clientId
+        );
+        const subject = `Application for ${job.title} — ${profile.full_name || 'Candidate'}`;
+        const htmlBody = buildApplicationEmailHTML(job, coverLetter, profile);
+        await sendEmailViaGmail(applyEmail, subject, htmlBody, token);
+        notify(`✅ Application emailed to ${applyEmail}`);
+      } else if (job.applylink) {
+        // 3b. Open apply link + copy cover letter to clipboard
+        navigator.clipboard?.writeText(coverLetter).catch(() => {});
+        window.open(job.applylink, '_blank');
+        notify(`✅ Apply link opened · Cover letter copied to clipboard`);
+      } else {
+        notify(`Cover letter generated — no apply link found. Copy manually.`, 'err');
+      }
+
+      // 4. Update status to Applied in DB
+      await supabase.from('jobs').update({
+        status: 'Applied',
+        applieddate: new Date().toISOString().split('T')[0],
+        notes: `[Auto-applied ${new Date().toLocaleDateString()}]\n${job.notes || ''}\n\n--- Cover Letter ---\n${coverLetter}`,
+      }).eq('id', job.id);
+
+      // 5. Log the application
+      const entry = {
+        jobId: job.id, title: job.title, company: job.company,
+        appliedAt: new Date().toISOString(),
+        method: applyEmail ? 'email' : 'link',
+        email: applyEmail || job.applylink || '—',
+      };
+      const newLog = [entry, ...appliedJobs].slice(0, 100);
+      setAppliedJobs(newLog);
+      localStorage.setItem('autoAppliedJobs', JSON.stringify(newLog));
+      fetchJobs();
+
+    } catch (err) {
+      notify('Auto-apply failed: ' + err.message, 'err');
+    }
+    setAutoApplying(null);
+  }
+
   // ── Gmail Scanner ─────────────────────────────────────────────────────
   async function startGmailScan() {
     setGmailLoading(true); setGmailEmails([]); setGmailStats(null);
@@ -1769,6 +1869,13 @@ Include: 6 technical Q&A (skills: ${job.skills || "general"}), 3 STAR behavioral
           </div>
           <div style={{ display: "flex", gap: 7, flexWrap: "wrap", alignItems: "center" }}>
             {profile.full_name && <span style={{ background: "rgba(99,102,241,0.1)", border: "1px solid rgba(99,102,241,0.2)", color: "#a5b4fc", padding: "4px 12px", borderRadius: 999, fontSize: 11, fontWeight: 600 }}>👤 {profile.full_name.split(" ")[0]}</span>}
+            <Btn onClick={() => setShowAutoApplyLog(true)} v="amb" sx={{ position: 'relative' }}>
+              ⚡ Applied {appliedJobs.length > 0 && (
+                <span style={{ background: '#ef4444', color: '#fff', borderRadius: 999, padding: '1px 5px', fontSize: 9, fontWeight: 700 }}>
+                  {appliedJobs.length}
+                </span>
+              )}
+            </Btn>
             <Btn onClick={() => setShowSearch(true)} v="cyn">🔍 Find Jobs</Btn>
             <Btn onClick={() => setShowSettings(true)} v="ghost">⚙️</Btn>
             <Btn onClick={() => supabase.auth.signOut()} v="red">⏏️</Btn>
@@ -1814,7 +1921,7 @@ Include: 6 technical Q&A (skills: ${job.skills || "general"}), 3 STAR behavioral
       {/* TABS */}
       <div style={{ background: "#050d1a", borderBottom: "1px solid #0a1628", padding: "0 24px", overflowX: "auto" }}>
         <div style={{ maxWidth: 1480, margin: "0 auto", display: "flex" }}>
-          {[["table", "📋 Table"], ["kanban", "🗂 Kanban"], ["analytics", "📊 Analytics"], ["gmail", "📧 Gmail"], ["profile", "👤 Profile"], ["reports", "📨 Reports"]].map(([t, l]) => (
+          {[["table", "📋 Table"], ["kanban", "🗂 Kanban"], ["analytics", "📊 Analytics"], ["gmail", "📧 Gmail"], ["profile", "👤 Profile"], ["resume", "📄 Resume"], ["reports", "📨 Reports"]].map(([t, l]) => (
             <button key={t} onClick={() => setTab(t)} className={`nav-tab${tab === t ? " active" : ""}`}>
               {l}
               {t === "profile" && profileComplete < 3 && <span style={{ background: "rgba(245,158,11,0.15)", border: "1px solid rgba(245,158,11,0.3)", color: "#fbbf24", padding: "1px 6px", borderRadius: 999, fontSize: 9, fontWeight: 700 }}>Setup</span>}
@@ -1949,14 +2056,22 @@ Include: 6 technical Q&A (skills: ${job.skills || "general"}), 3 STAR behavioral
                             ["👁", "Details", () => setShowDetail(job)],
                             ["🎙", "Prep", () => doPrep(job)],
                             ["✉", "Cover", () => { setShowCover(job); setCoverOut(""); }],
+                            ["⚡","Auto Apply",() => autoApplyToJob(job)],
                             ["📅", "Calendar", () => addToCalendar(job)],
                             ["📋", "Duplicate", () => duplicateJob(job)],
                             ["✏️", "Edit", () => openEdit(job)],
                             ["🗑", "Delete", () => delJob(job.id)],
                           ].map(([ic, tt, fn]) => (
                             <button key={tt} onClick={fn} title={tt} className="hbtn"
-                              style={{ background: tt === "Delete" ? "rgba(220,38,38,0.07)" : "#070f1c", border: `1px solid ${tt === "Delete" ? "#450a0a" : "#1e2d45"}`, borderRadius: 7, padding: "4px 6px", color: tt === "Delete" ? "#f87171" : "#64748b", cursor: "pointer", fontSize: 11 }}>
-                              {ic}
+                              style={{
+                                background: tt === 'Delete' ? 'rgba(220,38,38,0.07)' : tt === 'Auto Apply' ? 'rgba(234,179,8,0.07)' : '#070f1c',
+                                border: `1px solid ${tt === 'Delete' ? '#450a0a' : tt === 'Auto Apply' ? 'rgba(234,179,8,0.2)' : '#1e2d45'}`,
+                                borderRadius: 7, padding: '4px 6px',
+                                color: tt === 'Delete' ? '#f87171' : tt === 'Auto Apply' ? '#fde047' : '#64748b',
+                                cursor: 'pointer', fontSize: 11,
+                                opacity: autoApplying === job.id ? 0.5 : 1,
+                              }}>
+                              {autoApplying === job.id && tt === 'Auto Apply' ? <span style={{ animation: 'spin 0.8s linear infinite', display: 'inline-block' }}>◌</span> : ic}
                             </button>
                           ))}
                         </div>
@@ -2228,6 +2343,22 @@ After uploading/pasting, click Parse Resume to auto-fill your profile." rows={7}
           <Btn v="pri" onClick={saveProfile} disabled={profileSaving} sx={{ width: "100%", justifyContent: "center", padding: "13px", fontSize: 14 }}>{profileSaving ? "Saving…" : "💾 Save Profile"}</Btn>
         </div>}
 
+        {/* RESUME */}
+        {tab === 'resume' && (
+          <ResumeBuilder
+            profile={profile}
+            callAI={AI}
+            notify={notify}
+            onSaveProfile={async (updatedData) => {
+              setProfile(p => ({ ...p, ...updatedData }));
+              await supabase.from('profiles').upsert({
+                ...updatedData, id: session.user.id, updated_at: new Date().toISOString()
+              });
+              notify('Profile synced from resume ✓');
+            }}
+          />
+        )}
+
         {/* REPORTS */}
         {tab === "reports" && <div>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 20, flexWrap: "wrap", gap: 12 }}>
@@ -2386,6 +2517,41 @@ After uploading/pasting, click Parse Resume to auto-fill your profile." rows={7}
       </div>
 
       {/* ══════ MODALS ══════ */}
+
+      {/* Auto Apply Log */}
+      {showAutoApplyLog && (
+        <Modal title="⚡ Auto-Apply Log" onClose={() => setShowAutoApplyLog(false)} wide>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
+            <span style={{ color: '#94a3b8', fontSize: 12 }}>{appliedJobs.length} applications sent</span>
+            <button onClick={() => { setAppliedJobs([]); localStorage.removeItem('autoAppliedJobs'); notify('Log cleared'); }}
+              style={{ background: 'transparent', border: '1px solid #450a0a', color: '#f87171', borderRadius: 8, padding: '5px 12px', cursor: 'pointer', fontSize: 11, fontFamily: 'inherit' }}>
+              🗑 Clear Log
+            </button>
+          </div>
+          {appliedJobs.length === 0 ? (
+            <div style={{ textAlign: 'center', padding: '40px', color: '#334155' }}>
+              <div style={{ fontSize: 32, marginBottom: 8 }}>📭</div>
+              <p>No auto-applications yet. Click ⚡ on any job to auto-apply.</p>
+            </div>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8, maxHeight: 500, overflowY: 'auto' }}>
+              {appliedJobs.map((a, i) => (
+                <div key={i} style={{ background: '#070f1c', border: '1px solid #1e2d45', borderRadius: 10, padding: '12px 16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <div>
+                    <div style={{ color: '#e2e8f0', fontWeight: 600, fontSize: 13 }}>{a.title} @ {a.company}</div>
+                    <div style={{ color: '#475569', fontSize: 11, marginTop: 3 }}>
+                      {new Date(a.appliedAt).toLocaleString()} · via {a.method} · {a.email}
+                    </div>
+                  </div>
+                  <span style={{ background: 'rgba(34,197,94,0.1)', border: '1px solid rgba(34,197,94,0.25)', color: '#86efac', padding: '2px 10px', borderRadius: 999, fontSize: 10, fontWeight: 700 }}>
+                    ✓ Sent
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+        </Modal>
+      )}
 
       {/* Settings */}
       {showSettings && <Modal title="⚙️ Settings" onClose={() => setShowSettings(false)}>
