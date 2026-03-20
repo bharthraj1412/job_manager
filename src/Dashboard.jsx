@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { supabase } from "./supabase";
-import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, LineChart, Line } from "recharts";
+import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, PieChart, Pie, Cell } from "recharts";
 import * as XLSX from "xlsx";
 
 // ── Constants ──────────────────────────────────────────────────────────────
@@ -16,10 +16,10 @@ const SC = {
 const GMAIL_STATUS_COLORS = {
   "Interview Scheduled": { bg: "rgba(37,99,235,0.18)", fg: "#60a5fa", accent: "#2563eb", lb: "#1e3a8a" },
   "Offer Received": { bg: "rgba(16,185,129,0.18)", fg: "#34d399", accent: "#10b981", lb: "#064e3b" },
-  "Rejected": { bg: "rgba(239,68,68,0.18)", fg: "#f87171", accent: "#ef4444", lb: "#7f1d1d" },
-  "Applied": { bg: "rgba(245,158,11,0.18)", fg: "#fbbf24", accent: "#f59e0b", lb: "#78350f" },
-  "Screening": { bg: "rgba(139,92,246,0.18)", fg: "#a78bfa", accent: "#8b5cf6", lb: "#4c1d95" },
-  "Pending": { bg: "rgba(148,163,184,0.12)", fg: "#94a3b8", accent: "#64748b", lb: "#1e293b" },
+  Rejected: { bg: "rgba(239,68,68,0.18)", fg: "#f87171", accent: "#ef4444", lb: "#7f1d1d" },
+  Applied: { bg: "rgba(245,158,11,0.18)", fg: "#fbbf24", accent: "#f59e0b", lb: "#78350f" },
+  Screening: { bg: "rgba(139,92,246,0.18)", fg: "#a78bfa", accent: "#8b5cf6", lb: "#4c1d95" },
+  Pending: { bg: "rgba(148,163,184,0.12)", fg: "#94a3b8", accent: "#64748b", lb: "#1e293b" },
 };
 const TYPES = ["Full-time", "Part-time", "Internship", "Contract", "Freelance"];
 const ADZUNA_CATEGORIES = [
@@ -45,7 +45,6 @@ const NVIDIA_MODEL = "deepseek-ai/deepseek-r1";
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 const fmtDate = d => d ? new Date(d).toLocaleDateString("en-IN", { day: "numeric", month: "short" }) : "—";
-const fmtDateFull = d => d ? new Date(d).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" }) : "—";
 const daysDiff = d => d ? Math.ceil((new Date(d) - new Date()) / 86400000) : null;
 const todayStr = () => new Date().toISOString().split("T")[0];
 
@@ -83,8 +82,8 @@ async function callAI(prompt, sysprompt = "", apiKey = NVIDIA_API_KEY, modelName
   messages.push({ role: "user", content: prompt });
   const r = await fetch(proxyUrl, {
     method: "POST",
-    headers: { "Content-Type": "application/json", "Authorization": `Bearer ${apiKey}` },
-    body: JSON.stringify({ model: modelName, messages, temperature: 0.6, top_p: 0.7, max_tokens: 4096 })
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
+    body: JSON.stringify({ model: modelName, messages, temperature: 0.6, top_p: 0.7, max_tokens: 4096 }),
   });
   if (!r.ok) { const t = await r.text(); throw new Error(`API Error ${r.status}: ${t}`); }
   const d = await r.json();
@@ -103,47 +102,127 @@ async function loadGis() {
   });
 }
 
+// FIX: Token caching — avoids re-asking for sign-in on every feature
 async function getGoogleToken(scope, session, clientId) {
+  // 1. Use session provider_token (users who signed in via Google OAuth)
   if (session?.provider_token) return session.provider_token;
-  if (!clientId) throw new Error("Google Client ID needed in Settings.");
+
+  // 2. Check sessionStorage cache from a previous GIS popup this session
+  const cacheKey = "gtoken_" + scope.replace(/[^a-zA-Z]/g, "").slice(-24);
+  try {
+    const cached = sessionStorage.getItem(cacheKey);
+    if (cached) {
+      const { token, exp } = JSON.parse(cached);
+      if (token && Date.now() < exp) return token;
+    }
+  } catch { }
+
+  if (!clientId) throw new Error("Google Client ID not set — add it in ⚙️ Settings.");
   const gis = await loadGis();
   return new Promise((resolve, reject) => {
-    const tc = gis.initTokenClient({ client_id: clientId, scope, callback: (r) => r.error ? reject(new Error(r.error)) : resolve(r.access_token) });
+    const tc = gis.initTokenClient({
+      client_id: clientId,
+      scope,
+      callback: (r) => {
+        if (r.error) return reject(new Error(r.error));
+        // Cache for 55 minutes so other features don't re-prompt
+        try {
+          sessionStorage.setItem(cacheKey, JSON.stringify({ token: r.access_token, exp: Date.now() + 3300000 }));
+        } catch { }
+        resolve(r.access_token);
+      },
+    });
     tc.requestAccessToken({ prompt: "" });
   });
 }
 
+// FIX: Proper UTF-8 → base64url encoding required by Gmail API
+function toBase64Url(str) {
+  const bytes = new TextEncoder().encode(str);
+  let binary = "";
+  bytes.forEach(b => (binary += String.fromCharCode(b)));
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+// FIX: Correct RFC 2822 + Gmail API raw message encoding
 async function sendEmailViaGmail(to, subject, htmlBody, token) {
-  const rawEmail = [`To: ${to}`, `Subject: =?UTF-8?B?${btoa(unescape(encodeURIComponent(subject)))}?=`, `MIME-Version: 1.0`, `Content-Type: text/html; charset=UTF-8`, ``, htmlBody].join("\r\n");
-  const encoded = btoa(unescape(encodeURIComponent(rawEmail))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  const subjectB64 = btoa(unescape(encodeURIComponent(subject)));
+  const rawEmail = [
+    `To: ${to}`,
+    `Subject: =?UTF-8?B?${subjectB64}?=`,
+    `MIME-Version: 1.0`,
+    `Content-Type: text/html; charset=UTF-8`,
+    ``,
+    htmlBody,
+  ].join("\r\n");
+
+  const encoded = toBase64Url(rawEmail);
   const res = await fetch("https://gmail.googleapis.com/gmail/v1/users/me/messages/send", {
-    method: "POST", headers: { "Authorization": `Bearer ${token}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ raw: encoded })
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ raw: encoded }),
   });
   if (!res.ok) { const t = await res.text(); throw new Error(`Gmail send failed: ${t}`); }
   return res.json();
 }
 
+// FIX: Find or create "JobBoard Pro" folder on Drive
+async function getOrCreateDriveFolder(folderName, token) {
+  const q = encodeURIComponent(
+    `name='${folderName}' and mimeType='application/vnd.google-apps.folder' and trashed=false`
+  );
+  const searchRes = await fetch(
+    `https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name)`,
+    { headers: { Authorization: `Bearer ${token}` } }
+  );
+  const searchData = await searchRes.json();
+  if (searchData.files?.length) return searchData.files[0].id;
+
+  const createRes = await fetch("https://www.googleapis.com/drive/v3/files", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ name: folderName, mimeType: "application/vnd.google-apps.folder" }),
+  });
+  if (!createRes.ok) throw new Error("Could not create Drive folder");
+  const folder = await createRes.json();
+  return folder.id;
+}
+
+// FIX: Save file inside "JobBoard Pro" folder
 async function saveFileToDrive(filename, content, mimeType, token) {
-  const metadata = { name: filename, mimeType };
-  const isBuffer = content instanceof ArrayBuffer || content instanceof Uint8Array;
-  const fileBlob = isBuffer ? new Blob([content], { type: mimeType }) : new Blob([content], { type: mimeType });
+  const folderId = await getOrCreateDriveFolder("JobBoard Pro", token);
+  const metadata = { name: filename, mimeType, parents: [folderId] };
+  const fileBlob = new Blob([content], { type: mimeType });
   const form = new FormData();
   form.append("metadata", new Blob([JSON.stringify(metadata)], { type: "application/json" }));
   form.append("file", fileBlob, filename);
-  const res = await fetch("https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart", {
-    method: "POST", headers: { "Authorization": `Bearer ${token}` }, body: form
-  });
+  const res = await fetch(
+    "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart",
+    { method: "POST", headers: { Authorization: `Bearer ${token}` }, body: form }
+  );
   if (!res.ok) { const t = await res.text(); throw new Error(`Drive save failed: ${t}`); }
   return res.json();
 }
 
+// FIX: Load PDF.js for proper PDF text extraction
+async function loadPdfJs() {
+  if (window.pdfjsLib) return window.pdfjsLib;
+  await new Promise((resolve, reject) => {
+    const s = document.createElement("script");
+    s.src = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js";
+    s.onload = resolve; s.onerror = reject;
+    document.body.appendChild(s);
+  });
+  window.pdfjsLib.GlobalWorkerOptions.workerSrc =
+    "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+  return window.pdfjsLib;
+}
+
 // ── Email Report HTML Template ────────────────────────────────────────────────
 function buildReportHTML(jobs, reportDate, profileName) {
-  const stats = STATUS.reduce((a, s) => { a[s] = jobs.filter(j => j.status === s).length; return a }, {});
+  const stats = STATUS.reduce((a, s) => { a[s] = jobs.filter(j => j.status === s).length; return a; }, {});
   const totalActive = jobs.filter(j => !["Rejected", "Withdrawn"].includes(j.status)).length;
   const interviews = jobs.filter(j => j.status === "Interview");
-  const offers = jobs.filter(j => j.status === "Offer");
   const upcoming = jobs.filter(j => j.deadline && daysDiff(j.deadline) >= 0 && daysDiff(j.deadline) <= 7);
   const recentApplied = jobs.filter(j => j.status === "Applied").slice(0, 5);
 
@@ -178,95 +257,73 @@ function buildReportHTML(jobs, reportDate, profileName) {
   }).join("");
 
   return `<!DOCTYPE html>
-<html>
-<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
+<html><head><meta charset="UTF-8"></head>
 <body style="margin:0;padding:0;background:#0a0f1a;font-family:'Segoe UI',Arial,sans-serif;">
 <table width="100%" cellpadding="0" cellspacing="0" style="background:#0a0f1a;padding:30px 0;">
 <tr><td align="center">
 <table width="620" cellpadding="0" cellspacing="0" style="max-width:620px;width:100%;">
-
-  <!-- HEADER -->
   <tr><td style="background:linear-gradient(135deg,#0f172a 0%,#1e1b4b 100%);border-radius:16px 16px 0 0;padding:32px;text-align:center;border:1px solid #1e2d45;border-bottom:none;">
-    <div style="font-size:28px;margin-bottom:6px;">🎯</div>
-    <h1 style="margin:0;font-size:26px;font-weight:800;background:linear-gradient(90deg,#60a5fa,#818cf8,#c084fc);-webkit-background-clip:text;-webkit-text-fill-color:transparent;color:#818cf8;">JobBoard Pro</h1>
+    <h1 style="margin:0;font-size:26px;font-weight:800;color:#818cf8;">🎯 JobBoard Pro</h1>
     <p style="color:#475569;font-size:13px;margin:8px 0 0;">Daily Report${profileName ? ` · ${profileName}` : ""} · ${reportDate}</p>
   </td></tr>
-
-  <!-- HERO STATS -->
   <tr><td style="background:#07101f;border:1px solid #1e2d45;border-top:none;border-bottom:none;padding:24px;">
-    <p style="color:#94a3b8;font-size:12px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;margin:0 0 16px;">📊 Application Overview</p>
+    <p style="color:#94a3b8;font-size:12px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;margin:0 0 16px;">📊 Overview</p>
     <table width="100%" cellpadding="0" cellspacing="0" style="background:#0a1628;border-radius:12px;border:1px solid #1e2d45;">
       <tr>
         <td style="text-align:center;padding:16px 8px;border-right:1px solid #1e2d45;">
           <div style="font-size:32px;font-weight:800;color:#60a5fa;font-family:monospace;">${jobs.length}</div>
-          <div style="font-size:10px;color:#475569;text-transform:uppercase;letter-spacing:0.05em;margin-top:3px;">Total</div>
+          <div style="font-size:10px;color:#475569;text-transform:uppercase;margin-top:3px;">Total</div>
         </td>
         <td style="text-align:center;padding:16px 8px;border-right:1px solid #1e2d45;">
           <div style="font-size:32px;font-weight:800;color:#86efac;font-family:monospace;">${totalActive}</div>
-          <div style="font-size:10px;color:#475569;text-transform:uppercase;letter-spacing:0.05em;margin-top:3px;">Active</div>
+          <div style="font-size:10px;color:#475569;text-transform:uppercase;margin-top:3px;">Active</div>
         </td>
         <td style="text-align:center;padding:16px 8px;border-right:1px solid #1e2d45;">
           <div style="font-size:32px;font-weight:800;color:#22c55e;font-family:monospace;">${stats.Interview || 0}</div>
-          <div style="font-size:10px;color:#475569;text-transform:uppercase;letter-spacing:0.05em;margin-top:3px;">Interviews</div>
+          <div style="font-size:10px;color:#475569;text-transform:uppercase;margin-top:3px;">Interviews</div>
         </td>
         <td style="text-align:center;padding:16px 8px;">
           <div style="font-size:32px;font-weight:800;color:#fde047;font-family:monospace;">${stats.Offer || 0}</div>
-          <div style="font-size:10px;color:#475569;text-transform:uppercase;letter-spacing:0.05em;margin-top:3px;">Offers</div>
+          <div style="font-size:10px;color:#475569;text-transform:uppercase;margin-top:3px;">Offers</div>
         </td>
       </tr>
     </table>
     <table width="100%" cellpadding="0" cellspacing="0" style="margin-top:12px;background:#0a1628;border-radius:12px;border:1px solid #1e2d45;"><tr>${statusRow}</tr></table>
   </td></tr>
-
-  ${upcoming.length > 0 ? `
-  <!-- URGENT DEADLINES -->
-  <tr><td style="background:#07101f;border:1px solid #1e2d45;border-top:none;border-bottom:none;padding:0 24px 24px;">
+  ${upcoming.length > 0 ? `<tr><td style="background:#07101f;border:1px solid #1e2d45;border-top:none;border-bottom:none;padding:0 24px 24px;">
     <div style="background:rgba(245,158,11,0.08);border:1px solid rgba(245,158,11,0.25);border-radius:12px;padding:16px;">
-      <p style="color:#fbbf24;font-size:12px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;margin:0 0 12px;">⏰ Deadlines This Week</p>
-      <table width="100%" cellpadding="0" cellspacing="0"><tr><th style="text-align:left;color:#475569;font-size:10px;padding:6px 14px;text-transform:uppercase;">Role</th><th style="text-align:left;color:#475569;font-size:10px;padding:6px 14px;text-transform:uppercase;">Company</th><th style="text-align:left;color:#475569;font-size:10px;padding:6px 14px;text-transform:uppercase;">Due</th></tr>${urgentRows}</table>
+      <p style="color:#fbbf24;font-size:12px;font-weight:700;text-transform:uppercase;margin:0 0 12px;">⏰ Deadlines This Week</p>
+      <table width="100%" cellpadding="0" cellspacing="0"><tr><th style="text-align:left;color:#475569;font-size:10px;padding:6px 14px;">Role</th><th style="text-align:left;color:#475569;font-size:10px;padding:6px 14px;">Company</th><th style="text-align:left;color:#475569;font-size:10px;padding:6px 14px;">Due</th></tr>${urgentRows}</table>
     </div>
-  </td></tr>`: ""}
-
-  ${interviews.length > 0 ? `
-  <!-- INTERVIEWS -->
-  <tr><td style="background:#07101f;border:1px solid #1e2d45;border-top:none;border-bottom:none;padding:0 24px 24px;">
-    <p style="color:#86efac;font-size:12px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;margin:0 0 12px;">🎙 Active Interviews</p>
-    <table width="100%" cellpadding="0" cellspacing="0" style="background:#0a1628;border-radius:12px;border:1px solid #16a34a;overflow:hidden;">
-      <tr style="background:#052e16;"><th style="text-align:left;color:#86efac;font-size:10px;padding:10px 14px;text-transform:uppercase;">Role</th><th style="text-align:left;color:#86efac;font-size:10px;padding:10px 14px;text-transform:uppercase;">Company</th><th style="text-align:left;color:#86efac;font-size:10px;padding:10px 14px;text-transform:uppercase;">Date</th></tr>
+  </td></tr>` : ""}
+  ${interviews.length > 0 ? `<tr><td style="background:#07101f;border:1px solid #1e2d45;border-top:none;border-bottom:none;padding:0 24px 24px;">
+    <p style="color:#86efac;font-size:12px;font-weight:700;text-transform:uppercase;margin:0 0 12px;">🎙 Active Interviews</p>
+    <table width="100%" cellpadding="0" cellspacing="0" style="background:#0a1628;border-radius:12px;border:1px solid #16a34a;">
+      <tr style="background:#052e16;"><th style="text-align:left;color:#86efac;font-size:10px;padding:10px 14px;">Role</th><th style="text-align:left;color:#86efac;font-size:10px;padding:10px 14px;">Company</th><th style="text-align:left;color:#86efac;font-size:10px;padding:10px 14px;">Date</th></tr>
       ${interviewRows}
     </table>
-  </td></tr>`: ""}
-
-  <!-- APPLIED JOBS -->
-  ${recentApplied.length > 0 ? `
-  <tr><td style="background:#07101f;border:1px solid #1e2d45;border-top:none;border-bottom:none;padding:0 24px 24px;">
-    <p style="color:#67e8f9;font-size:12px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;margin:0 0 12px;">✉️ Applied (Recent)</p>
-    <table width="100%" cellpadding="0" cellspacing="0" style="background:#0a1628;border-radius:12px;border:1px solid #0891b2;overflow:hidden;">
+  </td></tr>` : ""}
+  ${recentApplied.length > 0 ? `<tr><td style="background:#07101f;border:1px solid #1e2d45;border-top:none;border-bottom:none;padding:0 24px 24px;">
+    <p style="color:#67e8f9;font-size:12px;font-weight:700;text-transform:uppercase;margin:0 0 12px;">✉️ Applied (Recent)</p>
+    <table width="100%" cellpadding="0" cellspacing="0" style="background:#0a1628;border-radius:12px;border:1px solid #0891b2;">
       <tr style="background:#0c2236;"><th style="text-align:left;color:#67e8f9;font-size:10px;padding:10px 14px;">Role</th><th style="text-align:left;color:#67e8f9;font-size:10px;padding:10px 14px;">Company</th><th style="text-align:left;color:#67e8f9;font-size:10px;padding:10px 14px;">Location</th><th style="text-align:left;color:#67e8f9;font-size:10px;padding:10px 14px;">Salary</th></tr>
       ${appliedRows}
     </table>
-  </td></tr>`: ""}
-
-  <!-- TIPS -->
+  </td></tr>` : ""}
   <tr><td style="background:#07101f;border:1px solid #1e2d45;border-top:none;border-bottom:none;padding:0 24px 24px;">
     <div style="background:rgba(99,102,241,0.08);border:1px solid rgba(99,102,241,0.2);border-radius:12px;padding:16px;">
       <p style="color:#818cf8;font-size:12px;font-weight:700;margin:0 0 8px;">💡 Today's Focus</p>
       <ul style="color:#64748b;font-size:12px;line-height:1.8;margin:0;padding-left:16px;">
-        ${stats.Interview > 0 ? `<li>Prepare thoroughly for your <strong style="color:#86efac">${stats.Interview} interview${stats.Interview > 1 ? "s" : ""}</strong></li>` : ""}
+        ${stats.Interview > 0 ? `<li>Prepare for your <strong style="color:#86efac">${stats.Interview} interview${stats.Interview > 1 ? "s" : ""}</strong></li>` : ""}
         ${upcoming.length > 0 ? `<li>Review <strong style="color:#fbbf24">${upcoming.length} upcoming deadline${upcoming.length > 1 ? "s" : ""}</strong></li>` : ""}
         ${stats.Bookmarked > 0 ? `<li>Convert <strong style="color:#93c5fd">${stats.Bookmarked} bookmarked</strong> jobs to applications</li>` : ""}
         <li>Follow up on applications older than 7 days</li>
-        <li>Keep your resume updated for each role</li>
       </ul>
     </div>
   </td></tr>
-
-  <!-- FOOTER -->
   <tr><td style="background:#060d1b;border:1px solid #1e2d45;border-top:none;border-radius:0 0 16px 16px;padding:20px 24px;text-align:center;">
-    <p style="color:#1e2d45;font-size:11px;margin:0;">Generated by <strong style="color:#475569">JobBoard Pro</strong> · ${reportDate}</p>
-    <p style="color:#1e2d45;font-size:10px;margin:6px 0 0;">This is your automated daily career report. An Excel file is attached.</p>
+    <p style="color:#334155;font-size:11px;margin:0;">Generated by <strong>JobBoard Pro</strong> · ${reportDate}</p>
   </td></tr>
-
 </table>
 </td></tr>
 </table>
@@ -279,67 +336,53 @@ function generateBeautifulExcel(jobs) {
   const date = new Date().toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" }).replace(/ /g, "-");
   const wb = XLSX.utils.book_new();
 
-  // Sheet 1: Active Applications
   const activeJobs = jobs.filter(j => !["Rejected", "Withdrawn"].includes(j.status));
   const headers1 = ["#", "Job Title", "Company", "Location", "Type", "Salary", "Skills", "Source", "Status", "Priority", "Applied Date", "Deadline", "Apply Link", "Notes"];
   const rows1 = activeJobs.map((j, i) => [i + 1, j.title, j.company, j.location, j.type, j.salary, j.skills, j.source, j.status, j.priority, j.applieddate, j.deadline, j.applylink, j.notes]);
   const ws1 = XLSX.utils.aoa_to_sheet([headers1, ...rows1]);
   ws1["!cols"] = [{ wch: 4 }, { wch: 35 }, { wch: 22 }, { wch: 18 }, { wch: 12 }, { wch: 16 }, { wch: 30 }, { wch: 14 }, { wch: 14 }, { wch: 10 }, { wch: 14 }, { wch: 14 }, { wch: 40 }, { wch: 50 }];
-  ws1["!freeze"] = { xSplit: 0, ySplit: 1 };
   XLSX.utils.book_append_sheet(wb, ws1, "📋 Active Applications");
 
-  // Sheet 2: All Applications
   const headers2 = ["#", "Job Title", "Company", "Location", "Type", "Salary", "Skills", "Source", "Status", "Priority", "Applied Date", "Deadline", "Notes"];
   const rows2 = jobs.map((j, i) => [i + 1, j.title, j.company, j.location, j.type, j.salary, j.skills, j.source, j.status, j.priority, j.applieddate, j.deadline, j.notes]);
   const ws2 = XLSX.utils.aoa_to_sheet([headers2, ...rows2]);
   ws2["!cols"] = [{ wch: 4 }, { wch: 35 }, { wch: 22 }, { wch: 18 }, { wch: 12 }, { wch: 16 }, { wch: 30 }, { wch: 14 }, { wch: 14 }, { wch: 10 }, { wch: 14 }, { wch: 14 }, { wch: 50 }];
   XLSX.utils.book_append_sheet(wb, ws2, "📁 All Applications");
 
-  // Sheet 3: Summary Statistics
-  const stats = STATUS.reduce((a, s) => { a[s] = jobs.filter(j => j.status === s).length; return a }, {});
+  const stats = STATUS.reduce((a, s) => { a[s] = jobs.filter(j => j.status === s).length; return a; }, {});
   const totalActive = jobs.filter(j => !["Rejected", "Withdrawn"].includes(j.status)).length;
   const responseRate = jobs.length ? Math.round(((stats.Interview + stats.Offer + stats.Rejected) / jobs.length) * 100) : 0;
   const summaryData = [
-    ["📊 JobBoard Pro — Summary Report", "", "", ""],
-    ["Generated On", date, "", ""],
-    ["", "", "", ""],
-    ["📈 Key Metrics", "", "", ""],
-    ["Total Applications", jobs.length, "", ""],
-    ["Active Applications", totalActive, "", ""],
-    ["Response Rate", `${responseRate}%`, "", ""],
-    ["", "", "", ""],
-    ["📋 By Status", "Count", "% of Total", ""],
-    ...STATUS.map(s => [s, stats[s] || 0, jobs.length ? `${Math.round((stats[s] || 0) / jobs.length * 100)}%` : "-", ""]),
-    ["", "", "", ""],
-    ["🎯 By Priority", "Count", "% of Active", ""],
-    ...["High", "Medium", "Low"].map(p => {
-      const cnt = jobs.filter(j => j.priority === p).length;
-      return [p, cnt, jobs.length ? `${Math.round(cnt / jobs.length * 100)}%` : ""];
-    }),
-    ["", "", "", ""],
-    ["📍 Top Locations", "Count", "", ""],
-    ...Object.entries(jobs.reduce((a, j) => { if (j.location) a[j.location] = (a[j.location] || 0) + 1; return a }, {})).sort((a, b) => b[1] - a[1]).slice(0, 8).map(([l, c]) => [l, c, "", ""]),
-    ["", "", "", ""],
-    ["🏢 Top Companies", "Count", "", ""],
-    ...Object.entries(jobs.reduce((a, j) => { if (j.company) a[j.company] = (a[j.company] || 0) + 1; return a }, {})).sort((a, b) => b[1] - a[1]).slice(0, 10).map(([c, n]) => [c, n, "", ""]),
-    ["", "", "", ""],
-    ["🔗 Top Sources", "Count", "", ""],
-    ...Object.entries(jobs.reduce((a, j) => { if (j.source) a[j.source] = (a[j.source] || 0) + 1; return a }, {})).sort((a, b) => b[1] - a[1]).slice(0, 8).map(([s, c]) => [s, c, "", ""]),
+    ["📊 JobBoard Pro — Summary Report", "", ""],
+    ["Generated On", date, ""],
+    ["", "", ""],
+    ["📈 Key Metrics", "", ""],
+    ["Total Applications", jobs.length, ""],
+    ["Active Applications", totalActive, ""],
+    ["Response Rate", `${responseRate}%`, ""],
+    ["", "", ""],
+    ["📋 By Status", "Count", "% of Total"],
+    ...STATUS.map(s => [s, stats[s] || 0, jobs.length ? `${Math.round((stats[s] || 0) / jobs.length * 100)}%` : "-"]),
+    ["", "", ""],
+    ["🎯 By Priority", "Count", "% of Total"],
+    ...["High", "Medium", "Low"].map(p => { const cnt = jobs.filter(j => j.priority === p).length; return [p, cnt, jobs.length ? `${Math.round(cnt / jobs.length * 100)}%` : ""]; }),
+    ["", "", ""],
+    ["📍 Top Locations", "Count", ""],
+    ...Object.entries(jobs.reduce((a, j) => { if (j.location) a[j.location] = (a[j.location] || 0) + 1; return a; }, {})).sort((a, b) => b[1] - a[1]).slice(0, 8).map(([l, c]) => [l, c, ""]),
+    ["", "", ""],
+    ["🏢 Top Companies", "Count", ""],
+    ...Object.entries(jobs.reduce((a, j) => { if (j.company) a[j.company] = (a[j.company] || 0) + 1; return a; }, {})).sort((a, b) => b[1] - a[1]).slice(0, 10).map(([c, n]) => [c, n, ""]),
   ];
   const ws3 = XLSX.utils.aoa_to_sheet(summaryData);
-  ws3["!cols"] = [{ wch: 28 }, { wch: 16 }, { wch: 16 }, { wch: 16 }];
+  ws3["!cols"] = [{ wch: 28 }, { wch: 16 }, { wch: 16 }];
   XLSX.utils.book_append_sheet(wb, ws3, "📊 Summary");
 
-  // Sheet 4: Interview Pipeline
-  const interviewJobs = jobs.filter(j => j.status === "Interview");
-  const offerJobs = jobs.filter(j => j.status === "Offer");
   const pipelineHeaders = ["Status", "Job Title", "Company", "Location", "Salary", "Deadline", "Notes"];
-  const pipelineRows = [...offerJobs, ...interviewJobs].map(j => [j.status, j.title, j.company, j.location, j.salary, j.deadline, j.notes]);
+  const pipelineRows = [...jobs.filter(j => j.status === "Offer"), ...jobs.filter(j => j.status === "Interview")].map(j => [j.status, j.title, j.company, j.location, j.salary, j.deadline, j.notes]);
   const ws4 = XLSX.utils.aoa_to_sheet([pipelineHeaders, ...pipelineRows]);
   ws4["!cols"] = [{ wch: 14 }, { wch: 35 }, { wch: 22 }, { wch: 18 }, { wch: 16 }, { wch: 14 }, { wch: 50 }];
   XLSX.utils.book_append_sheet(wb, ws4, "🎙 Interview Pipeline");
 
-  // Sheet 5: Upcoming Deadlines
   const urgentJobs = jobs.filter(j => j.deadline && daysDiff(j.deadline) >= 0 && daysDiff(j.deadline) <= 14 && !["Rejected", "Withdrawn", "Offer"].includes(j.status)).sort((a, b) => new Date(a.deadline) - new Date(b.deadline));
   const urgentHeaders = ["Days Left", "Job Title", "Company", "Status", "Deadline", "Apply Link"];
   const urgentRows2 = urgentJobs.map(j => [daysDiff(j.deadline), j.title, j.company, j.status, j.deadline, j.applylink]);
@@ -430,7 +473,7 @@ const MatchBadge = ({ score }) => {
   const col = score >= 75 ? "#22c55e" : score >= 50 ? "#f59e0b" : score >= 25 ? "#60a5fa" : "#475569";
   const bg = score >= 75 ? "rgba(34,197,94,0.1)" : score >= 50 ? "rgba(245,158,11,0.1)" : score >= 25 ? "rgba(96,165,250,0.1)" : "rgba(71,85,105,0.1)";
   if (!score) return null;
-  return <span title="Match with your profile skills" style={{ background: bg, border: `1px solid ${col}`, color: col, padding: "2px 8px", borderRadius: 999, fontSize: 10, fontWeight: 700 }}>⚡{score}%</span>;
+  return <span title="Match score" style={{ background: bg, border: `1px solid ${col}`, color: col, padding: "2px 8px", borderRadius: 999, fontSize: 10, fontWeight: 700 }}>⚡{score}%</span>;
 };
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -453,7 +496,7 @@ export default function Dashboard({ session }) {
     if (data) setJobs(data);
   }, []);
 
-  // ── Settings ──
+  // ── Settings (persisted to localStorage) ──
   const [geminiKey, setGeminiKey] = useState(() => localStorage.getItem("geminiKey") || NVIDIA_API_KEY);
   const [clientId, setClientId] = useState(() => localStorage.getItem("googleClientId") || import.meta.env.VITE_GOOGLE_CLIENT_ID || "");
   const [aiModel, setAiModel] = useState(() => localStorage.getItem("aiModel") || NVIDIA_MODEL);
@@ -466,15 +509,14 @@ export default function Dashboard({ session }) {
 
   // ── Profile ──
   const [profile, setProfile] = useState({ full_name: "", email: "", phone: "", location: "", headline: "", summary: "", skills: "", education: "", experience: "", certifications: "", languages: "", linkedin: "", github: "", portfolio: "", target_roles: "", target_locations: "", expected_salary: "" });
-  const [profileLoaded, setProfileLoaded] = useState(false);
   const [resumeText, setResumeText] = useState("");
   const [resumeParsing, setResumeParsing] = useState(false);
   const [profileSaving, setProfileSaving] = useState(false);
-  const [showResumeHelp, setShowResumeHelp] = useState(false);
+  const [bio, setBio] = useState("");
 
   // ── Report ──
   const [reportSending, setReportSending] = useState(false);
-  const [reportLog, setReportLog] = useState(() => { try { return JSON.parse(localStorage.getItem("reportLog") || "[]") } catch { return [] } });
+  const [reportLog, setReportLog] = useState(() => { try { return JSON.parse(localStorage.getItem("reportLog") || "[]"); } catch { return []; } });
   const [showReportPreview, setShowReportPreview] = useState(false);
   const [reportPreviewHTML, setReportPreviewHTML] = useState("");
 
@@ -492,32 +534,22 @@ export default function Dashboard({ session }) {
   const [form, setForm] = useState(blank);
   const upd = (k, v) => setForm(f => ({ ...f, [k]: v }));
 
-  // ── Search ──
-  const [sq, setSq] = useState("");
-  const [sr, setSr] = useState([]);
-  const [sLoad, setSLoad] = useState(false);
-  const [sErr, setSErr] = useState("");
-  const [sPage, setSPage] = useState(1);
-  const [sTotalResults, setSTotalResults] = useState(0);
-  const [sLocation, setSLocation] = useState("");
-  const [sJobType, setSJobType] = useState("all");
-  const [sSalaryMin, setSSalaryMin] = useState("");
-  const [sCategory, setSCategory] = useState("");
-  const [sExperience, setSExperience] = useState("");
+  // ── Job Search ──
+  const [sq, setSq] = useState(""); const [sr, setSr] = useState([]); const [sLoad, setSLoad] = useState(false); const [sErr, setSErr] = useState("");
+  const [sPage, setSPage] = useState(1); const [sTotalResults, setSTotalResults] = useState(0);
+  const [sLocation, setSLocation] = useState(""); const [sJobType, setSJobType] = useState("all");
+  const [sSalaryMin, setSSalaryMin] = useState(""); const [sCategory, setSCategory] = useState(""); const [sExperience, setSExperience] = useState("");
   const [showFilters, setShowFilters] = useState(false);
-  const [savedSearches, setSavedSearches] = useState(() => { try { return JSON.parse(localStorage.getItem("savedSearches") || "[]") } catch { return [] } });
+  const [savedSearches, setSavedSearches] = useState(() => { try { return JSON.parse(localStorage.getItem("savedSearches") || "[]"); } catch { return []; } });
 
   // ── AI ──
   const [prepOut, setPrepOut] = useState(""); const [prepLoad, setPrepLoad] = useState(false);
   const [coverOut, setCoverOut] = useState(""); const [coverLoad, setCoverLoad] = useState(false);
-  const [bio, setBio] = useState("");
 
   // ── Gmail ──
-  const [gmailDays, setGmailDays] = useState("30");
-  const [gmailExtra, setGmailExtra] = useState("");
+  const [gmailDays, setGmailDays] = useState("30"); const [gmailExtra, setGmailExtra] = useState("");
   const [gmailStatus, setGmailStatus] = useState({ msg: 'Ready — click "Scan Gmail" to begin', type: "" });
-  const [gmailEmails, setGmailEmails] = useState([]);
-  const [gmailFilter, setGmailFilter] = useState("all");
+  const [gmailEmails, setGmailEmails] = useState([]); const [gmailFilter, setGmailFilter] = useState("all");
   const [gmailLoading, setGmailLoading] = useState(false);
   const [gmailRows, setGmailRows] = useState([{ id: 1, date: "", company: "", jobTitle: "", status: "Applied", interviewDate: "", interviewTime: "", interviewType: "", notes: "" }]);
   const [gmailStats, setGmailStats] = useState(null);
@@ -526,32 +558,34 @@ export default function Dashboard({ session }) {
   const AI = useCallback((prompt, sys = "") => callAI(prompt, sys, geminiKey, aiModel, proxyUrl), [geminiKey, aiModel, proxyUrl]);
 
   // ── Init ──────────────────────────────────────────────────────────────
-  useEffect(() => {
-    fetchJobs();
-    loadProfile();
-  }, [session]);
+  useEffect(() => { fetchJobs(); loadProfile(); }, [session]);
 
-  // Auto daily report check
+  // FIX: Auto daily report — use setInterval to check every minute instead of firing once
   useEffect(() => {
-    if (!autoReport || !reportEmail || jobs.length === 0) return;
-    const lastSent = localStorage.getItem("lastReportDate");
-    const today = todayStr();
-    if (lastSent === today) return;
-    const [h, m] = reportTime.split(":").map(Number);
-    const now = new Date();
-    if (now.getHours() >= h && now.getMinutes() >= m) {
-      handleSendReport(true);
-    }
-  }, [jobs, autoReport]);
+    if (!autoReport || !reportEmail) return;
+    const check = () => {
+      const lastSent = localStorage.getItem("lastReportDate");
+      if (lastSent === todayStr()) return;
+      const [h, m] = reportTime.split(":").map(Number);
+      const now = new Date();
+      if (now.getHours() > h || (now.getHours() === h && now.getMinutes() >= m)) {
+        if (jobs.length > 0) handleSendReport(true);
+      }
+    };
+    check(); // also check immediately on mount
+    const interval = setInterval(check, 60000);
+    return () => clearInterval(interval);
+  }, [autoReport, reportEmail, reportTime, jobs.length]);
 
   // ── Profile CRUD ──────────────────────────────────────────────────────
+  // FIX: use maybeSingle() — .single() throws when no profile row exists yet
   async function loadProfile() {
-    const { data } = await supabase.from("profiles").select("*").eq("id", session.user.id).single();
+    const { data, error } = await supabase.from("profiles").select("*").eq("id", session.user.id).maybeSingle();
     if (data) {
       setProfile(p => ({ ...p, ...data }));
       if (data.skills) setBio(`${data.headline || ""}\n${data.summary || ""}`);
     }
-    setProfileLoaded(true);
+    // error is fine here — means no profile row yet, user will create one
   }
 
   async function saveProfile() {
@@ -569,17 +603,15 @@ export default function Dashboard({ session }) {
     try {
       const result = await AI(
         `Parse this resume and extract structured data. Return ONLY valid JSON with these exact keys:
-        full_name, email, phone, location, headline (job title/role), summary (professional summary 2-3 sentences),
-        skills (comma-separated technical skills), education (formatted string), experience (recent 3 jobs as string),
-        certifications, languages, linkedin, github, portfolio, target_roles, expected_salary.
-        
-        Resume text:
-        ${resumeText.slice(0, 8000)}`,
-        "You are a resume parser. Return ONLY valid JSON, no markdown, no explanation."
+full_name, email, phone, location, headline, summary, skills (comma-separated), education, experience, certifications, languages, linkedin, github, portfolio, target_roles, expected_salary.
+
+Resume:
+${resumeText.slice(0, 8000)}`,
+        "You are a resume parser. Return ONLY valid JSON, no markdown."
       );
       const clean = result.replace(/```json|```/g, "").trim();
       const match = clean.match(/\{[\s\S]*\}/);
-      if (!match) throw new Error("Could not parse resume");
+      if (!match) throw new Error("Could not parse resume JSON");
       const parsed = JSON.parse(match[0]);
       setProfile(p => ({ ...p, ...parsed }));
       notify("✓ Resume parsed! Review and save your profile.");
@@ -587,37 +619,47 @@ export default function Dashboard({ session }) {
     setResumeParsing(false);
   }
 
+  // FIX: Use PDF.js for proper PDF text extraction
   async function handleResumeFile(e) {
     const file = e.target.files[0]; if (!file) return;
-    const reader = new FileReader();
-    if (file.name.endsWith(".txt")) {
-      reader.onload = ev => { setResumeText(ev.target.result); notify("File loaded ✓ — click Parse Resume"); };
-      reader.readAsText(file);
-    } else if (file.name.endsWith(".pdf")) {
-      reader.onload = async ev => {
+
+    if (file.name.toLowerCase().endsWith(".pdf")) {
+      notify("Reading PDF…");
+      const reader = new FileReader();
+      reader.onload = async (ev) => {
         try {
-          const text = new TextDecoder("utf-8").decode(new Uint8Array(ev.target.result)).replace(/[^\x20-\x7E\n\r\t]/g, " ").replace(/\s+/g, " ").trim();
-          if (text.length > 200) { setResumeText(text); notify("PDF text extracted ✓ — click Parse Resume"); }
-          else notify("PDF appears image-based. Please paste your resume text manually.", "err");
-        } catch { notify("Could not read PDF. Please paste text manually.", "err"); }
+          const pdfjsLib = await loadPdfJs();
+          const pdf = await pdfjsLib.getDocument({ data: ev.target.result }).promise;
+          let text = "";
+          for (let i = 1; i <= pdf.numPages; i++) {
+            const page = await pdf.getPage(i);
+            const content = await page.getTextContent();
+            const pageText = content.items.map(item => item.str).join(" ");
+            text += pageText + "\n";
+          }
+          if (text.trim().length > 80) {
+            setResumeText(text.trim());
+            notify(`PDF read ✓ (${pdf.numPages} pages) — click Parse Resume`);
+          } else {
+            notify("PDF appears to be image-based. Please paste your resume text manually.", "err");
+          }
+        } catch (err) { notify("PDF error: " + err.message + ". Try pasting text manually.", "err"); }
       };
       reader.readAsArrayBuffer(file);
-    } else {
-      reader.onload = ev => { setResumeText(ev.target.result); notify("File loaded ✓"); };
+    } else if (file.name.toLowerCase().match(/\.(txt|doc|docx)$/)) {
+      const reader = new FileReader();
+      reader.onload = ev => { setResumeText(ev.target.result); notify("File loaded ✓ — click Parse Resume"); };
       reader.readAsText(file);
+    } else {
+      notify("Supported formats: PDF, TXT, DOC", "err");
     }
     e.target.value = "";
   }
 
-  // ── CRUD ──────────────────────────────────────────────────────────────
+  // ── Job CRUD ──────────────────────────────────────────────────────────
   function openAdd() {
-    const prefill = {
-      title: "", company: "", location: profile.target_locations || profile.location || "",
-      type: "Full-time", salary: profile.expected_salary || "",
-      skills: profile.skills || "", source: "", applylink: "",
-      status: "Bookmarked", applieddate: "", deadline: "", notes: "", priority: "Medium"
-    };
-    setForm(prefill); setEditId(null); setShowAdd(true);
+    setForm({ ...blank, location: profile.target_locations || profile.location || "", salary: profile.expected_salary || "", skills: profile.skills || "" });
+    setEditId(null); setShowAdd(true);
   }
   function openEdit(j) { setForm({ ...j }); setEditId(j.id); setShowAdd(true); }
   async function saveJob() {
@@ -637,8 +679,8 @@ export default function Dashboard({ session }) {
     if (!error) { fetchJobs(); notify("Removed"); }
   }
   async function setStatus(id, status) {
-    const { error } = await supabase.from("jobs").update({ status }).eq("id", id);
-    if (!error) fetchJobs();
+    await supabase.from("jobs").update({ status }).eq("id", id);
+    fetchJobs();
   }
 
   // ── Reports ───────────────────────────────────────────────────────────
@@ -651,14 +693,11 @@ export default function Dashboard({ session }) {
         "https://www.googleapis.com/auth/gmail.send https://www.googleapis.com/auth/drive.file",
         session, clientId
       );
-      // Build report
       const htmlBody = buildReportHTML(jobs, reportDate, profile.full_name || session.user.email);
       const { wb, filename } = generateBeautifulExcel(jobs);
       const xlsxBuf = XLSX.write(wb, { bookType: "xlsx", type: "array" });
 
-      // Send email
       await sendEmailViaGmail(reportEmail, `📊 JobBoard Pro Daily Report — ${reportDate}`, htmlBody, token);
-      // Save to Drive
       await saveFileToDrive(filename, xlsxBuf, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", token);
 
       const entry = { date: todayStr(), time: new Date().toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" }), jobs: jobs.length, isAuto };
@@ -693,11 +732,13 @@ export default function Dashboard({ session }) {
     localStorage.setItem("reportEmail", reportEmail);
     localStorage.setItem("autoReport", String(autoReport));
     localStorage.setItem("reportTime", reportTime);
+    // Clear cached Google tokens so new clientId takes effect
+    Object.keys(sessionStorage).filter(k => k.startsWith("gtoken_")).forEach(k => sessionStorage.removeItem(k));
     notify("Settings saved ✓");
     setShowSettings(false);
   }
 
-  // ── Search ────────────────────────────────────────────────────────────
+  // ── Adzuna Job Search ────────────────────────────────────────────────
   function buildAdzunaUrl(page = 1) {
     const expLevel = EXPERIENCE_LEVELS.find(e => e.value === sExperience);
     let what = sq.trim();
@@ -754,7 +795,7 @@ export default function Dashboard({ session }) {
 
   function saveSearch() {
     const label = sq || sCategory || sLocation || "Search";
-    const search = { label, sq, sLocation, sJobType, sSalaryMin, sCategory, sExperience, date: new Date().toLocaleDateString() };
+    const search = { label, sq, sLocation, sJobType, sSalaryMin, sCategory, sExperience };
     const updated = [search, ...savedSearches.filter(s => s.label !== label)].slice(0, 5);
     setSavedSearches(updated); localStorage.setItem("savedSearches", JSON.stringify(updated));
     notify("Search saved ✓");
@@ -770,11 +811,11 @@ export default function Dashboard({ session }) {
   async function doPrep(job) {
     if (!job) return;
     setPrepLoad(true); setPrepOut(""); setShowPrep(job);
-    const profileCtx = profile.skills ? `\nCandidate profile: ${profile.headline || ""}. Skills: ${profile.skills}. Background: ${profile.summary || ""}` : "";
+    const profileCtx = profile.skills ? `\nCandidate: ${profile.headline || ""}. Skills: ${profile.skills}. ${profile.summary || ""}` : "";
     try {
       const t = await AI(
-        `Create a detailed interview prep guide for "${job.title}" at ${job.company}.${profileCtx}
-        Include: 6 technical Q&A (skills: ${job.skills}), 3 STAR behavioral questions with sample answers, 3 questions to ask them, company research tips for ${job.company}, 5 key preparation tasks. Use clear headers.`,
+        `Interview prep guide for "${job.title}" at ${job.company}.${profileCtx}
+Include: 6 technical Q&A (skills: ${job.skills || "general"}), 3 STAR behavioral Qs with sample answers, 3 questions to ask interviewer, 5 key prep tasks.`,
         "You are an expert career coach. Be specific and actionable."
       );
       setPrepOut(t);
@@ -785,11 +826,11 @@ export default function Dashboard({ session }) {
   async function doCover(job) {
     if (!job) return;
     setCoverLoad(true); setCoverOut("");
-    const profileCtx = profile.full_name ? `Name: ${profile.full_name}. Skills: ${profile.skills}. Experience: ${profile.experience}. ${profile.summary}` : bio || "Recent graduate";
+    const profileCtx = profile.full_name ? `Name: ${profile.full_name}. Skills: ${profile.skills}. ${profile.summary || bio || ""}` : bio || "Motivated candidate";
     try {
       const t = await AI(
-        `Write a compelling professional cover letter for: Role: ${job.title} at ${job.company} (${job.location}). Required skills: ${job.skills}. Candidate background: ${profileCtx}. Be specific, genuine, 3 strong paragraphs. No clichés.`,
-        "You are a professional career writer. Write natural, tailored, compelling cover letters."
+        `Write a professional cover letter for: Role: ${job.title} at ${job.company} (${job.location}). Skills needed: ${job.skills || "general"}. Candidate: ${profileCtx}. Be specific, genuine, 3 strong paragraphs.`,
+        "You are a professional career writer. No clichés."
       );
       setCoverOut(t);
     } catch (err) { setCoverOut("Error: " + err.message); }
@@ -799,7 +840,7 @@ export default function Dashboard({ session }) {
   // ── Gmail Scanner ─────────────────────────────────────────────────────
   async function startGmailScan() {
     setGmailLoading(true); setGmailEmails([]); setGmailStats(null);
-    setGmailStatus({ msg: "Authorizing…", type: "loading" });
+    setGmailStatus({ msg: "Authorizing Gmail…", type: "loading" });
     try {
       const token = await getGoogleToken("https://www.googleapis.com/auth/gmail.readonly", session, clientId);
       await fetchAndParseEmails(token);
@@ -826,16 +867,16 @@ export default function Dashboard({ session }) {
         return { subject, sender, date, snippet: d.snippet };
       });
       setGmailStatus({ msg: "Analyzing with AI…", type: "loading" });
-      const text = await AI(`Analyze these job-related emails. Return a JSON array only. Each object: {company,jobTitle,status(Applied|Screening|Interview Scheduled|Interview Done|Offer Received|Rejected|Pending),interviewDate,interviewTime,interviewType,sender,date,snippet,subject}. ONLY valid JSON array:\n${JSON.stringify(payload)}`, "Return only a valid JSON array, no markdown.");
+      const text = await AI(`Analyze these job emails. Return ONLY a JSON array. Each object: {company,jobTitle,status(Applied|Screening|Interview Scheduled|Interview Done|Offer Received|Rejected|Pending),interviewDate,interviewTime,interviewType,sender,date,snippet,subject}.\n${JSON.stringify(payload)}`, "Return only a valid JSON array, no markdown.");
       const match = text.replace(/```json|```/g, "").trim().match(/\[[\s\S]*\]/);
       const emails = match ? JSON.parse(match[0]) : [];
       if (emails.length) {
         setGmailEmails(emails);
-        const stats = { total: emails.length, applied: emails.filter(e => e.status === "Applied").length, interview: emails.filter(e => e.status.includes("Interview")).length, offer: emails.filter(e => e.status.includes("Offer") || e.status === "Accepted").length, rejected: emails.filter(e => e.status === "Rejected").length, pending: emails.filter(e => e.status === "Pending").length };
+        const stats = { total: emails.length, applied: emails.filter(e => e.status === "Applied").length, interview: emails.filter(e => e.status.includes("Interview")).length, offer: emails.filter(e => e.status.includes("Offer")).length, rejected: emails.filter(e => e.status === "Rejected").length, pending: emails.filter(e => e.status === "Pending").length };
         setGmailStats(stats);
         setGmailRows(emails.map((e, i) => ({ id: i + 1, date: e.date ? e.date.split("T")[0] : "", company: e.company || "", jobTitle: e.jobTitle || "", status: e.status || "Applied", interviewDate: e.interviewDate || "", interviewTime: e.interviewTime || "", interviewType: e.interviewType || "", notes: e.snippet || "" })));
         setGmailStatus({ msg: `✓ Found ${emails.length} job-related emails`, type: "success" });
-      } else setGmailStatus({ msg: "✓ No matched emails.", type: "success" });
+      } else { setGmailStatus({ msg: "✓ Scan complete. No structured matches found.", type: "success" }); }
     } catch (err) { setGmailStatus({ msg: "Error: " + err.message, type: "error" }); }
     setGmailLoading(false);
   }
@@ -855,12 +896,12 @@ export default function Dashboard({ session }) {
 
   async function exportAndSaveToDrive() {
     try {
-      notify("Requesting Drive access…");
+      notify("Connecting to Drive…");
       const token = await getGoogleToken("https://www.googleapis.com/auth/drive.file", session, clientId);
       const { wb, filename } = generateBeautifulExcel(jobs);
       const buf = XLSX.write(wb, { bookType: "xlsx", type: "array" });
       await saveFileToDrive(filename, buf, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", token);
-      notify(`"${filename}" saved to Google Drive ✓`);
+      notify(`"${filename}" saved to Drive → JobBoard Pro folder ✓`);
     } catch (err) { notify("Drive: " + err.message, "err"); }
   }
 
@@ -883,11 +924,17 @@ export default function Dashboard({ session }) {
         }
         const mapped = data.map(r => ({ title: r["Job Title"] || r.title || "Untitled", company: r.Company || r.company || "", location: r.Location || r.location || "", type: r.Type || r.type || "Full-time", salary: r.Salary || r.salary || "", skills: r.Skills || r.skills || "", source: r.Source || r.source || "Import", applylink: r["Apply Link"] || r.applylink || "", status: r.Status || r.status || "Bookmarked", priority: r.Priority || r.priority || "Medium", applieddate: r["Applied Date"] || r.applieddate || "", deadline: r.Deadline || r.deadline || "", notes: r.Notes || r.notes || "", user_id: session.user.id }));
         const newJobs = []; let skipped = 0;
-        mapped.forEach(r => { const isDup = jobs.some(j => j.title.toLowerCase() === r.title.toLowerCase() && j.company.toLowerCase() === r.company.toLowerCase()); if (isDup) skipped++; else newJobs.push(r); });
+        mapped.forEach(r => { const isDup = jobs.some(j => j.title?.toLowerCase() === r.title?.toLowerCase() && j.company?.toLowerCase() === r.company?.toLowerCase()); if (isDup) skipped++; else newJobs.push(r); });
         if (!newJobs.length) { notify(`All ${skipped} jobs already exist`); return; }
-        const doBatches = async () => { for (let i = 0; i < newJobs.length; i += 500) { const { error } = await supabase.from("jobs").insert(newJobs.slice(i, i + 500)); if (error) { notify(error.message, "err"); return; } } fetchJobs(); notify(`Imported ${newJobs.length} jobs ✓${skipped > 0 ? ` (${skipped} skipped)` : ""}`); };
+        const doBatches = async () => {
+          for (let i = 0; i < newJobs.length; i += 500) {
+            const { error } = await supabase.from("jobs").insert(newJobs.slice(i, i + 500));
+            if (error) { notify(error.message, "err"); return; }
+          }
+          fetchJobs(); notify(`Imported ${newJobs.length} jobs ✓${skipped > 0 ? ` (${skipped} skipped as duplicates)` : ""}`);
+        };
         doBatches();
-      } catch { notify("Import failed — check format", "err"); }
+      } catch { notify("Import failed — check file format", "err"); }
     };
     reader.readAsArrayBuffer(file); e.target.value = "";
   }
@@ -900,7 +947,7 @@ export default function Dashboard({ session }) {
       const startObj = dt.includes("T") ? { dateTime: new Date(dt).toISOString() } : { date: dt };
       const endObj = dt.includes("T") ? { dateTime: new Date(new Date(dt).getTime() + 3600000).toISOString() } : { date: dt };
       const event = { summary: `Interview: ${job.company} – ${job.title}`, description: `Role: ${job.title}\nLink: ${job.applylink || "none"}`, start: startObj, end: endObj };
-      const res = await fetch("https://www.googleapis.com/calendar/v3/calendars/primary/events", { method: "POST", headers: { "Authorization": `Bearer ${token}`, "Content-Type": "application/json" }, body: JSON.stringify(event) });
+      const res = await fetch("https://www.googleapis.com/calendar/v3/calendars/primary/events", { method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, body: JSON.stringify(event) });
       if (!res.ok) throw new Error("Failed to create event");
       notify("Added to Google Calendar ✓");
     } catch (err) { notify("Calendar: " + err.message, "err"); }
@@ -910,7 +957,7 @@ export default function Dashboard({ session }) {
     try {
       const token = await getGoogleToken("https://www.googleapis.com/auth/drive.file", session, clientId);
       await saveFileToDrive(filename, content, "text/plain", token);
-      notify(`Saved to Drive ✓`);
+      notify(`Saved to Drive → JobBoard Pro ✓`);
     } catch (err) { notify("Drive: " + err.message, "err"); }
   }
 
@@ -919,8 +966,7 @@ export default function Dashboard({ session }) {
   const visible = baseVisible.filter(j => filterStatus === "All" || j.status === filterStatus).sort((a, b) => { let av = sortK === "id" ? a.id : (a[sortK] ?? ""), bv = sortK === "id" ? b.id : (b[sortK] ?? ""); return sortD === "asc" ? (av > bv ? 1 : -1) : (av < bv ? 1 : -1); });
   function toggleSort(k) { if (sortK === k) setSortD(d => d === "asc" ? "desc" : "asc"); else { setSortK(k); setSortD("asc"); } }
   const sIcon = k => sortK === k ? (sortD === "asc" ? "↑" : "↓") : <span style={{ opacity: .2 }}>↕</span>;
-
-  const stats = STATUS.reduce((a, s) => { a[s] = baseVisible.filter(j => j.status === s).length; return a }, {});
+  const stats = STATUS.reduce((a, s) => { a[s] = baseVisible.filter(j => j.status === s).length; return a; }, {});
   const overdue = jobs.filter(j => j.deadline && daysDiff(j.deadline) < 0 && !["Rejected", "Withdrawn", "Offer"].includes(j.status)).length;
   const soonDue = jobs.filter(j => j.deadline && daysDiff(j.deadline) >= 0 && daysDiff(j.deadline) <= 7 && !["Rejected", "Withdrawn", "Offer"].includes(j.status)).length;
   const filteredGmail = gmailEmails.filter(e => gmailFilter === "all" || e.status === gmailFilter);
@@ -947,24 +993,23 @@ export default function Dashboard({ session }) {
         .chip:hover{border-color:#818cf8;color:#818cf8}.chip.active{background:rgba(79,70,229,0.15);border-color:#4f46e5;color:#a5b4fc}
         .nav-tab{background:none;border:none;border-bottom:2px solid transparent;color:#334155;padding:12px 16px;font-size:12px;font-weight:600;cursor:pointer;transition:all .15s;display:flex;align-items:center;gap:6px;font-family:inherit;white-space:nowrap}
         .nav-tab:hover{color:#64748b}.nav-tab.active{border-bottom-color:#4f46e5;color:#818cf8}
-        .search-card{background:#06101e;border:1px solid #0f1c2e;border-radius:14px;padding:16px;transition:all .2s;position:relative;overflow:hidden}
+        .search-card{background:#06101e;border:1px solid #0f1c2e;border-radius:14px;padding:16px;transition:all .2s}
         .search-card:hover{border-color:#1e2d45;background:#07111f}
         input::placeholder{color:#334155}textarea::placeholder{color:#334155}select option{background:#070f1c}
-        .profile-field{background:#070f1c;border:1px solid #1e2d45;border-radius:8px;padding:10px 12px;color:#e2e8f0;font-size:12px;line-height:1.6;min-height:36px}
       `}</style>
       <input ref={fileRef} type="file" accept=".xlsx,.xls" style={{ display: "none" }} onChange={importXLSX} />
       <input ref={resumeRef} type="file" accept=".pdf,.txt,.doc,.docx" style={{ display: "none" }} onChange={handleResumeFile} />
 
       {/* Toast */}
-      {toast && <div style={{ position: "fixed", top: 20, right: 20, zIndex: 9999, background: toast.t === "err" ? "#2d0a0a" : "#061a0f", border: `1px solid ${toast.t === "err" ? "#7f1d1d" : "#14532d"}`, color: toast.t === "err" ? "#fca5a5" : "#6ee7b7", padding: "11px 18px", borderRadius: 12, fontSize: 13, animation: "mi .2s ease", maxWidth: 340, boxShadow: "0 8px 32px rgba(0,0,0,0.4)", display: "flex", alignItems: "center", gap: 10 }}>
+      {toast && <div style={{ position: "fixed", top: 20, right: 20, zIndex: 9999, background: toast.t === "err" ? "#2d0a0a" : "#061a0f", border: `1px solid ${toast.t === "err" ? "#7f1d1d" : "#14532d"}`, color: toast.t === "err" ? "#fca5a5" : "#6ee7b7", padding: "11px 18px", borderRadius: 12, fontSize: 13, animation: "mi .2s ease", maxWidth: 360, boxShadow: "0 8px 32px rgba(0,0,0,0.4)", display: "flex", alignItems: "center", gap: 10 }}>
         <span style={{ fontSize: 16 }}>{toast.t === "err" ? "⚠️" : "✓"}</span>{toast.m}
       </div>}
 
       {/* HEADER */}
-      <div style={{ background: "#050d1a", borderBottom: "1px solid #0a1628", padding: "14px 24px", position: "sticky", top: 0, zIndex: 100, backdropFilter: "blur(12px)" }}>
+      <div style={{ background: "#050d1a", borderBottom: "1px solid #0a1628", padding: "14px 24px", position: "sticky", top: 0, zIndex: 100 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10, maxWidth: 1480, margin: "0 auto" }}>
           <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-            <div style={{ width: 34, height: 34, borderRadius: 9, background: "linear-gradient(135deg,#1d4ed8,#7c3aed)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 17, flexShrink: 0 }}>🎯</div>
+            <div style={{ width: 34, height: 34, borderRadius: 9, background: "linear-gradient(135deg,#1d4ed8,#7c3aed)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 17 }}>🎯</div>
             <div>
               <h1 style={{ fontFamily: "'Syne',sans-serif", fontSize: 19, fontWeight: 800, margin: 0, background: "linear-gradient(90deg,#60a5fa,#818cf8,#c084fc)", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent" }}>JobBoard Pro</h1>
               <p style={{ color: "#1e2d45", fontSize: 9, marginTop: 1, letterSpacing: "0.05em" }}>Search · Track · Profile · Reports</p>
@@ -972,12 +1017,12 @@ export default function Dashboard({ session }) {
           </div>
           <div style={{ display: "flex", gap: 7, flexWrap: "wrap", alignItems: "center" }}>
             {profile.full_name && <span style={{ background: "rgba(99,102,241,0.1)", border: "1px solid rgba(99,102,241,0.2)", color: "#a5b4fc", padding: "4px 12px", borderRadius: 999, fontSize: 11, fontWeight: 600 }}>👤 {profile.full_name.split(" ")[0]}</span>}
-            <Btn onClick={() => setShowSearch(true)} v="cyn" sx={{ fontWeight: 700 }}>🔍 Find Jobs</Btn>
+            <Btn onClick={() => setShowSearch(true)} v="cyn">🔍 Find Jobs</Btn>
             <Btn onClick={() => setShowSettings(true)} v="ghost">⚙️</Btn>
             <Btn onClick={() => supabase.auth.signOut()} v="red">⏏️</Btn>
             <div style={{ width: 1, height: 20, background: "#1e2d45" }} />
             <Btn onClick={openAdd} v="pri">＋ Add Job</Btn>
-            <Btn onClick={() => fileRef.current.click()} v="ghost">📂</Btn>
+            <Btn onClick={() => fileRef.current.click()} v="ghost">📂 Import</Btn>
             <Btn onClick={exportXLSX} v="grn">📥 Excel</Btn>
             <Btn onClick={exportAndSaveToDrive} v="vio">☁️ Drive</Btn>
           </div>
@@ -989,7 +1034,7 @@ export default function Dashboard({ session }) {
         <div style={{ maxWidth: 1480, margin: "0 auto", display: "flex", gap: 10, flexWrap: "wrap" }}>
           {overdue > 0 && <span style={{ background: "rgba(220,38,38,0.08)", border: "1px solid #7f1d1d", color: "#f87171", padding: "3px 12px", borderRadius: 999, fontSize: 11, fontWeight: 700 }}>🔴 {overdue} deadline{overdue > 1 ? "s" : ""} overdue</span>}
           {soonDue > 0 && <span style={{ background: "rgba(245,158,11,0.08)", border: "1px solid #78350f", color: "#fbbf24", padding: "3px 12px", borderRadius: 999, fontSize: 11, fontWeight: 700 }}>⏰ {soonDue} due this week</span>}
-          {autoReport && <span style={{ background: "rgba(99,102,241,0.08)", border: "1px solid rgba(99,102,241,0.2)", color: "#818cf8", padding: "3px 12px", borderRadius: 999, fontSize: 11, fontWeight: 700 }}>📧 Auto-report {reportTime}</span>}
+          {autoReport && <span style={{ background: "rgba(99,102,241,0.08)", border: "1px solid rgba(99,102,241,0.2)", color: "#818cf8", padding: "3px 12px", borderRadius: 999, fontSize: 11, fontWeight: 700 }}>📧 Auto-report ON at {reportTime}</span>}
         </div>
       </div>}
 
@@ -998,13 +1043,12 @@ export default function Dashboard({ session }) {
         <div style={{ maxWidth: 1480, margin: "0 auto", display: "flex", gap: 16, flexWrap: "wrap", alignItems: "center", justifyContent: "space-between" }}>
           <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
             {[["All", baseVisible.length, "#60a5fa"], ...STATUS.map(s => [s, stats[s], SC[s].dot])].map(([s, c, col]) => (
-              <button key={s} onClick={() => setFS(s)} style={{ background: filterStatus === s ? `${col}18` : "transparent", border: `1px solid ${filterStatus === s ? col : "#1e2d45"}`, borderRadius: 8, padding: "4px 12px", color: filterStatus === s ? "#f1f5f9" : "#475569", fontSize: 11, fontWeight: 600, cursor: "pointer", transition: "all .15s", display: "flex", alignItems: "center", gap: 5, fontFamily: "inherit" }}>
-                {filterStatus === s && <span style={{ width: 5, height: 5, borderRadius: "50%", background: col }} />}
+              <button key={s} onClick={() => setFS(s)} style={{ background: filterStatus === s ? `${col}18` : "transparent", border: `1px solid ${filterStatus === s ? col : "#1e2d45"}`, borderRadius: 8, padding: "4px 12px", color: filterStatus === s ? "#f1f5f9" : "#475569", fontSize: 11, fontWeight: 600, cursor: "pointer", transition: "all .15s", fontFamily: "inherit" }}>
                 {s} <span style={{ color: col, fontWeight: 700 }}>{c}</span>
               </button>
             ))}
           </div>
-          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <div style={{ display: "flex", gap: 8 }}>
             <select value={filterType} onChange={e => setFT(e.target.value)} style={{ background: "#070f1c", border: "1px solid #1e2d45", borderRadius: 8, padding: "5px 10px", color: filterType !== "All" ? "#a5b4fc" : "#64748b", fontSize: 11, outline: "none", cursor: "pointer", fontFamily: "inherit" }}>
               <option value="All">All Types</option>{TYPES.map(t => <option key={t}>{t}</option>)}
             </select>
@@ -1029,7 +1073,7 @@ export default function Dashboard({ session }) {
         </div>
       </div>
 
-      {/* ── CONTENT ── */}
+      {/* CONTENT */}
       <div style={{ maxWidth: 1480, margin: "0 auto", padding: "22px 24px" }}>
 
         {/* TABLE */}
@@ -1037,12 +1081,12 @@ export default function Dashboard({ session }) {
           <div style={{ display: "flex", gap: 10, marginBottom: 14, flexWrap: "wrap", alignItems: "center" }}>
             <div style={{ flex: 1, minWidth: 220, position: "relative" }}>
               <span style={{ position: "absolute", left: 12, top: "50%", transform: "translateY(-50%)", fontSize: 14, pointerEvents: "none", opacity: .4 }}>🔍</span>
-              <Inp value={q} onChange={e => setQ(e.target.value)} placeholder="Search title, company, skills, location…" sx={{ paddingLeft: 34 }} />
+              <Inp value={q} onChange={e => setQ(e.target.value)} placeholder="Search title, company, skills…" sx={{ paddingLeft: 34 }} />
             </div>
             <span style={{ color: "#334155", fontSize: 12 }}>{visible.length} result{visible.length !== 1 ? "s" : ""}</span>
             {q && <button onClick={() => setQ("")} style={{ background: "transparent", border: "none", color: "#64748b", cursor: "pointer", fontSize: 12, fontFamily: "inherit" }}>✕ Clear</button>}
           </div>
-          <div style={{ overflowX: "auto", borderRadius: 14, border: "1px solid #0a1628", boxShadow: "0 4px 24px rgba(0,0,0,0.2)" }}>
+          <div style={{ overflowX: "auto", borderRadius: 14, border: "1px solid #0a1628" }}>
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
               <thead>
                 <tr style={{ background: "#06101e", borderBottom: "1px solid #0a1628" }}>
@@ -1059,7 +1103,7 @@ export default function Dashboard({ session }) {
                       <div style={{ color: "#e2e8f0", fontWeight: 600, fontSize: 13, marginBottom: 2 }}>
                         {job.applylink ? <a href={job.applylink} target="_blank" rel="noreferrer" style={{ color: "#60a5fa", textDecoration: "none" }}>{job.title}</a> : job.title}
                       </div>
-                      {job.skills && <div style={{ color: "#334155", fontSize: 10, marginTop: 2 }}>{job.skills.split(",").slice(0, 3).join(" · ")}</div>}
+                      {job.skills && <div style={{ color: "#334155", fontSize: 10 }}>{job.skills.split(",").slice(0, 3).join(" · ")}</div>}
                       {profile.skills && <MatchBadge score={calcMatchScore(job.skills, profile.skills)} />}
                     </td>
                     <td style={{ padding: "11px 13px", color: "#94a3b8", fontWeight: 500 }}>{job.company}</td>
@@ -1093,7 +1137,7 @@ export default function Dashboard({ session }) {
           {STATUS.map(col => {
             const cj = baseVisible.filter(j => j.status === col); const c = SC[col];
             return <div key={col} className="kb-drop" style={{ background: "#06101e", border: `1px solid ${c.border}20`, borderTop: `3px solid ${c.border}`, borderRadius: 14, padding: 14, minHeight: 170 }}
-              onDragOver={e => { e.preventDefault(); e.currentTarget.classList.add("over") }}
+              onDragOver={e => { e.preventDefault(); e.currentTarget.classList.add("over"); }}
               onDragLeave={e => e.currentTarget.classList.remove("over")}
               onDrop={e => { e.currentTarget.classList.remove("over"); if (dragId.current) { setStatus(dragId.current, col); dragId.current = null; } }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
@@ -1109,7 +1153,6 @@ export default function Dashboard({ session }) {
                     <div style={{ color: "#e2e8f0", fontWeight: 600, fontSize: 12, lineHeight: 1.4, marginBottom: 3 }}>{job.title}</div>
                     <div style={{ color: "#475569", fontSize: 11, marginBottom: 5 }}>{job.company}</div>
                     <Deadline date={job.deadline} />
-                    {profile.skills && job.skills && <div style={{ marginTop: 4 }}><MatchBadge score={calcMatchScore(job.skills, profile.skills)} /></div>}
                     <div style={{ marginTop: 8, display: "flex", gap: 4, alignItems: "center" }}>
                       <PriBadge p={job.priority} />
                       <div style={{ marginLeft: "auto", display: "flex", gap: 4 }}>
@@ -1129,7 +1172,7 @@ export default function Dashboard({ session }) {
         {/* ANALYTICS */}
         {tab === "analytics" && <div>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(155px,1fr))", gap: 12, marginBottom: 20 }}>
-            <StatCard label="Total" value={baseVisible.length} color="#60a5fa" icon="📋" sub={`${jobs.length} total`} />
+            <StatCard label="Total" value={baseVisible.length} color="#60a5fa" icon="📋" />
             <StatCard label="Active" value={baseVisible.filter(j => !["Rejected", "Withdrawn"].includes(j.status)).length} color="#86efac" icon="✅" />
             <StatCard label="Interviews" value={stats.Interview || 0} color="#22c55e" icon="🎙" />
             <StatCard label="Offers" value={stats.Offer || 0} color="#fde047" icon="🏆" />
@@ -1186,10 +1229,13 @@ export default function Dashboard({ session }) {
         {/* GMAIL */}
         {tab === "gmail" && <div>
           <div style={{ background: "#06101e", border: "1px solid #1e2d45", borderRadius: 16, padding: 22, marginBottom: 20 }}>
-            <div style={{ color: "#06b6d4", fontWeight: 700, fontSize: 14, marginBottom: 14, display: "flex", alignItems: "center", gap: 10 }}>🔍 Scan Gmail for Job Emails<span style={{ background: "rgba(6,182,212,0.1)", border: "1px solid rgba(6,182,212,0.25)", color: "#06b6d4", padding: "2px 8px", borderRadius: 999, fontSize: 10 }}>Gmail API + AI</span></div>
+            <div style={{ color: "#06b6d4", fontWeight: 700, fontSize: 14, marginBottom: 14, display: "flex", alignItems: "center", gap: 10 }}>🔍 Scan Gmail for Job Emails
+              <span style={{ background: "rgba(6,182,212,0.1)", border: "1px solid rgba(6,182,212,0.25)", color: "#06b6d4", padding: "2px 8px", borderRadius: 999, fontSize: 10 }}>Gmail API + AI</span>
+            </div>
+            {!clientId && <div style={{ background: "rgba(245,158,11,0.08)", border: "1px solid rgba(245,158,11,0.25)", borderRadius: 10, padding: "10px 14px", marginBottom: 14, fontSize: 12, color: "#fbbf24" }}>⚠️ Add your Google Client ID in ⚙️ Settings to use Gmail scanning.</div>}
             <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 14 }}>
               <input type="number" value={gmailDays} onChange={e => setGmailDays(e.target.value)} min="1" max="365" placeholder="Days" style={{ width: 90, background: "#070f1c", border: "1px solid #1e2d45", borderRadius: 8, padding: "10px 12px", color: "#e2e8f0", fontSize: 13, outline: "none", fontFamily: "inherit" }} />
-              <input value={gmailExtra} onChange={e => setGmailExtra(e.target.value)} placeholder="Extra keywords…" style={{ flex: 1, minWidth: 200, background: "#070f1c", border: "1px solid #1e2d45", borderRadius: 8, padding: "10px 12px", color: "#e2e8f0", fontSize: 13, outline: "none", fontFamily: "inherit" }} />
+              <input value={gmailExtra} onChange={e => setGmailExtra(e.target.value)} placeholder="Extra keywords (optional)…" style={{ flex: 1, minWidth: 200, background: "#070f1c", border: "1px solid #1e2d45", borderRadius: 8, padding: "10px 12px", color: "#e2e8f0", fontSize: 13, outline: "none", fontFamily: "inherit" }} />
               <Btn v="cyn" onClick={startGmailScan} disabled={gmailLoading}>{gmailLoading ? <><span style={{ animation: "spin 0.8s linear infinite", display: "inline-block" }}>◌</span> Scanning…</> : "⚡ Scan Gmail"}</Btn>
               <Btn v="ghost" onClick={() => { setGmailEmails([]); setGmailStats(null); setGmailStatus({ msg: "Cleared.", type: "" }); setGmailRows([{ id: 1, date: "", company: "", jobTitle: "", status: "Applied", interviewDate: "", interviewTime: "", interviewType: "", notes: "" }]); }}>✕ Clear</Btn>
             </div>
@@ -1216,25 +1262,24 @@ export default function Dashboard({ session }) {
           </div>}
           {filteredGmail.map((email, i) => {
             const sc = GMAIL_STATUS_COLORS[email.status] || GMAIL_STATUS_COLORS["Pending"];
-            const initials = (email.company || "?").substring(0, 2).toUpperCase();
             return <div key={i} className="email-card" style={{ background: "#06101e", border: "1px solid #1e2d45", borderRadius: 14, padding: 16, marginBottom: 10, borderLeft: `3px solid ${sc.accent}` }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 10, flexWrap: "wrap", gap: 8 }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-                  <div style={{ width: 36, height: 36, borderRadius: 9, background: sc.lb, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 13, fontWeight: 700, color: "#fff", flexShrink: 0 }}>{initials}</div>
+                  <div style={{ width: 36, height: 36, borderRadius: 9, background: sc.lb, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 13, fontWeight: 700, color: "#fff", flexShrink: 0 }}>{(email.company || "?").substring(0, 2).toUpperCase()}</div>
                   <div><div style={{ fontWeight: 700, fontSize: 14 }}>{email.company || "Unknown"}</div><div style={{ color: "#64748b", fontSize: 12, marginTop: 2 }}>{email.jobTitle || email.subject || "Position"}</div></div>
                 </div>
-                <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
                   <span style={{ background: sc.bg, color: sc.fg, padding: "3px 10px", borderRadius: 999, fontSize: 10, fontWeight: 700 }}>{email.status}</span>
                   <Btn v="grn" onClick={() => addGmailToTracker(email)} sx={{ padding: "5px 11px", fontSize: 11 }}>+ Add to Tracker</Btn>
                 </div>
               </div>
               {email.snippet && <div style={{ color: "#8eafd0", fontSize: 13, marginBottom: 8, lineHeight: 1.6 }}>{email.snippet}</div>}
-              {email.interviewDate && <div style={{ background: "rgba(37,99,235,0.08)", border: "1px solid rgba(37,99,235,0.2)", borderRadius: 8, padding: "7px 12px", marginBottom: 8, fontSize: 12, color: "#60a5fa", fontWeight: 600 }}>📅 Interview: {email.interviewDate}{email.interviewTime && ` at ${email.interviewTime}`}{email.interviewType && ` — ${email.interviewType}`}</div>}
+              {email.interviewDate && <div style={{ background: "rgba(37,99,235,0.08)", border: "1px solid rgba(37,99,235,0.2)", borderRadius: 8, padding: "7px 12px", marginBottom: 8, fontSize: 12, color: "#60a5fa", fontWeight: 600 }}>📅 {email.interviewDate}{email.interviewTime && ` at ${email.interviewTime}`}{email.interviewType && ` — ${email.interviewType}`}</div>}
               <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>{email.sender && <span style={{ fontSize: 11, color: "#475569" }}>📧 {email.sender}</span>}{email.date && <span style={{ fontSize: 11, color: "#475569" }}>🗓 {email.date}</span>}</div>
             </div>;
           })}
           <div style={{ marginTop: 20 }}>
-            <div style={{ color: "#94a3b8", fontWeight: 700, fontSize: 14, marginBottom: 14, display: "flex", alignItems: "center", gap: 8 }}>📋 Application Tracker <span style={{ color: "#334155", fontWeight: 400, fontSize: 11 }}>(editable)</span></div>
+            <div style={{ color: "#94a3b8", fontWeight: 700, fontSize: 14, marginBottom: 14 }}>📋 Application Tracker</div>
             <div style={{ overflowX: "auto", borderRadius: 14, border: "1px solid #0a1628" }}>
               <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
                 <thead><tr style={{ background: "#06101e", borderBottom: "1px solid #0a1628" }}>{["#", "Date", "Company", "Job Title", "Status", "Interview Date", "Time", "Type", "Notes"].map(h => <th key={h} style={{ padding: "9px 12px", color: "#334155", fontWeight: 700, fontSize: 10, letterSpacing: "0.07em", textAlign: "left", whiteSpace: "nowrap" }}>{h}</th>)}</tr></thead>
@@ -1242,13 +1287,9 @@ export default function Dashboard({ session }) {
                   {gmailRows.map((row, i) => (
                     <tr key={row.id} style={{ borderBottom: "1px solid #06101e" }}>
                       <td style={{ padding: "8px 12px", color: "#334155", fontSize: 11 }}>{row.id}</td>
-                      <td style={{ padding: "4px 8px" }}><input value={row.date} onChange={e => setGmailRows(rs => rs.map((r, j) => j === i ? { ...r, date: e.target.value } : r))} placeholder="YYYY-MM-DD" style={{ background: "transparent", border: "none", color: "#e2e8f0", fontFamily: "inherit", fontSize: 12, width: 110, outline: "none" }} /></td>
-                      <td style={{ padding: "4px 8px" }}><input value={row.company} onChange={e => setGmailRows(rs => rs.map((r, j) => j === i ? { ...r, company: e.target.value } : r))} placeholder="Company" style={{ background: "transparent", border: "none", color: "#e2e8f0", fontFamily: "inherit", fontSize: 12, width: 120, outline: "none" }} /></td>
-                      <td style={{ padding: "4px 8px" }}><input value={row.jobTitle} onChange={e => setGmailRows(rs => rs.map((r, j) => j === i ? { ...r, jobTitle: e.target.value } : r))} placeholder="Job title" style={{ background: "transparent", border: "none", color: "#e2e8f0", fontFamily: "inherit", fontSize: 12, width: 160, outline: "none" }} /></td>
+                      {["date", "company", "jobTitle"].map(k => <td key={k} style={{ padding: "4px 8px" }}><input value={row[k]} onChange={e => setGmailRows(rs => rs.map((r, j) => j === i ? { ...r, [k]: e.target.value } : r))} placeholder={k === "date" ? "YYYY-MM-DD" : k} style={{ background: "transparent", border: "none", color: "#e2e8f0", fontFamily: "inherit", fontSize: 12, width: k === "jobTitle" ? 160 : k === "company" ? 130 : 110, outline: "none" }} /></td>)}
                       <td style={{ padding: "4px 8px" }}><select value={row.status} onChange={e => setGmailRows(rs => rs.map((r, j) => j === i ? { ...r, status: e.target.value } : r))} style={{ background: "#070f1c", border: "1px solid #1e2d45", borderRadius: 6, padding: "3px 6px", color: "#e2e8f0", fontSize: 11, cursor: "pointer", outline: "none", fontFamily: "inherit" }}>{["Applied", "Screening", "Interview Scheduled", "Interview Done", "Offer Received", "Accepted", "Rejected", "Withdrawn"].map(s => <option key={s}>{s}</option>)}</select></td>
-                      {["interviewDate", "interviewTime", "interviewType", "notes"].map(k => (
-                        <td key={k} style={{ padding: "4px 8px" }}><input value={row[k]} onChange={e => setGmailRows(rs => rs.map((r, j) => j === i ? { ...r, [k]: e.target.value } : r))} placeholder={k === "interviewType" ? "Video/Phone" : k === "notes" ? "Notes…" : ""} style={{ background: "transparent", border: "none", color: "#e2e8f0", fontFamily: "inherit", fontSize: 12, width: k === "notes" ? 200 : 100, outline: "none" }} /></td>
-                      ))}
+                      {["interviewDate", "interviewTime", "interviewType", "notes"].map(k => <td key={k} style={{ padding: "4px 8px" }}><input value={row[k]} onChange={e => setGmailRows(rs => rs.map((r, j) => j === i ? { ...r, [k]: e.target.value } : r))} placeholder={k === "interviewType" ? "Video/Phone" : k === "notes" ? "Notes…" : ""} style={{ background: "transparent", border: "none", color: "#e2e8f0", fontFamily: "inherit", fontSize: 12, width: k === "notes" ? 200 : 100, outline: "none" }} /></td>)}
                     </tr>
                   ))}
                 </tbody>
@@ -1258,13 +1299,12 @@ export default function Dashboard({ session }) {
           </div>
         </div>}
 
-        {/* ═══ PROFILE TAB ═══ */}
+        {/* PROFILE */}
         {tab === "profile" && <div>
-          {/* Header */}
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 20, flexWrap: "wrap", gap: 12 }}>
             <div>
               <h2 style={{ fontFamily: "'Syne',sans-serif", fontSize: 18, fontWeight: 800, color: "#f1f5f9", margin: 0 }}>👤 Your Profile</h2>
-              <p style={{ color: "#475569", fontSize: 12, marginTop: 4 }}>Upload your resume to auto-fill. Profile powers AI cover letters, interview prep & job matching.</p>
+              <p style={{ color: "#475569", fontSize: 12, marginTop: 4 }}>Upload your resume to auto-fill. Profile powers AI cover letters, job matching & interview prep.</p>
             </div>
             <div style={{ display: "flex", gap: 8 }}>
               <Btn v="ghost" onClick={() => resumeRef.current.click()}>📎 Upload Resume</Btn>
@@ -1276,26 +1316,24 @@ export default function Dashboard({ session }) {
           <div style={{ background: "#06101e", border: "1px solid #1e2d45", borderRadius: 16, padding: 22, marginBottom: 20 }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14, flexWrap: "wrap", gap: 10 }}>
               <div style={{ color: "#a78bfa", fontWeight: 700, fontSize: 13, display: "flex", alignItems: "center", gap: 8 }}>
-                📄 Resume Parser <span style={{ background: "rgba(139,92,246,0.12)", border: "1px solid rgba(139,92,246,0.25)", color: "#a78bfa", padding: "2px 8px", borderRadius: 999, fontSize: 10 }}>AI-Powered</span>
+                📄 Resume Parser
+                <span style={{ background: "rgba(139,92,246,0.12)", border: "1px solid rgba(139,92,246,0.25)", color: "#a78bfa", padding: "2px 8px", borderRadius: 999, fontSize: 10 }}>AI-Powered + PDF.js</span>
               </div>
               <div style={{ display: "flex", gap: 8 }}>
                 <Btn v="ghost" onClick={() => resumeRef.current.click()} sx={{ fontSize: 11 }}>📎 Upload PDF/TXT</Btn>
                 <Btn v="vio" onClick={parseResume} disabled={resumeParsing || !resumeText.trim()}>{resumeParsing ? <><span style={{ animation: "spin 0.8s linear infinite", display: "inline-block" }}>◌</span> Parsing…</> : "⚡ Parse Resume"}</Btn>
               </div>
             </div>
-            <Txt value={resumeText} onChange={e => setResumeText(e.target.value)} placeholder="Paste your complete resume text here, or upload a PDF/TXT file above…
+            <Txt value={resumeText} onChange={e => setResumeText(e.target.value)} placeholder="Upload a PDF/TXT above, or paste your resume text here…
 
-The AI will extract: name, contact details, skills, education, work experience, certifications and more.
-Then review & save to your profile." rows={7} sx={{ fontFamily: "'JetBrains Mono',monospace", fontSize: 12 }} />
-            <div style={{ marginTop: 10, background: "rgba(139,92,246,0.06)", border: "1px solid rgba(139,92,246,0.15)", borderRadius: 8, padding: "10px 14px", fontSize: 11, color: "#8b5cf6", display: "flex", gap: 8, alignItems: "flex-start" }}>
-              <span style={{ flexShrink: 0 }}>💡</span>
-              <span>Supports PDF (text-based), .txt, and pasted text. After parsing, review the extracted data below and save to your profile. Your profile skills are used for <strong>job match scoring</strong> and <strong>AI-personalized</strong> cover letters & interview prep.</span>
+PDF.js is used for accurate text extraction from PDF files.
+After uploading/pasting, click Parse Resume to auto-fill your profile." rows={7} sx={{ fontFamily: "'JetBrains Mono',monospace", fontSize: 12 }} />
+            <div style={{ marginTop: 10, background: "rgba(139,92,246,0.06)", border: "1px solid rgba(139,92,246,0.15)", borderRadius: 8, padding: "10px 14px", fontSize: 11, color: "#8b5cf6" }}>
+              💡 Supports text-based PDFs, TXT files, and pasted text. Your skills are used for <strong>job match scoring</strong> and personalized AI responses.
             </div>
           </div>
 
-          {/* Profile Fields */}
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(280px,1fr))", gap: 16, marginBottom: 20 }}>
-            {/* Personal */}
             <div style={{ background: "#06101e", border: "1px solid #1e2d45", borderRadius: 14, padding: 18 }}>
               <div style={{ color: "#60a5fa", fontSize: 11, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 14 }}>Personal Info</div>
               <F label="Full Name"><Inp value={profile.full_name || ""} onChange={e => setProfile(p => ({ ...p, full_name: e.target.value }))} placeholder="Your name" /></F>
@@ -1305,55 +1343,42 @@ Then review & save to your profile." rows={7} sx={{ fontFamily: "'JetBrains Mono
               <F label="LinkedIn"><Inp value={profile.linkedin || ""} onChange={e => setProfile(p => ({ ...p, linkedin: e.target.value }))} placeholder="linkedin.com/in/…" /></F>
               <F label="GitHub"><Inp value={profile.github || ""} onChange={e => setProfile(p => ({ ...p, github: e.target.value }))} placeholder="github.com/…" /></F>
             </div>
-
-            {/* Professional */}
             <div style={{ background: "#06101e", border: "1px solid #1e2d45", borderRadius: 14, padding: 18 }}>
               <div style={{ color: "#a78bfa", fontSize: 11, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 14 }}>Professional</div>
               <F label="Headline"><Inp value={profile.headline || ""} onChange={e => setProfile(p => ({ ...p, headline: e.target.value }))} placeholder="e.g. Software Engineer | React & Python" /></F>
               <F label="Summary"><Txt value={profile.summary || ""} onChange={e => setProfile(p => ({ ...p, summary: e.target.value }))} placeholder="2-3 sentence professional summary…" rows={3} /></F>
-              <F label="Skills" hint={profile.skills ? `${profile.skills.split(",").length} skills` : ""}><Txt value={profile.skills || ""} onChange={e => setProfile(p => ({ ...p, skills: e.target.value }))} placeholder="React, Python, SQL, Node.js…" rows={3} /></F>
-              <F label="Certifications"><Inp value={profile.certifications || ""} onChange={e => setProfile(p => ({ ...p, certifications: e.target.value }))} placeholder="AWS, Google, etc." /></F>
+              <F label="Skills" hint={profile.skills ? `${profile.skills.split(",").filter(s => s.trim()).length} skills` : ""}><Txt value={profile.skills || ""} onChange={e => setProfile(p => ({ ...p, skills: e.target.value }))} placeholder="React, Python, SQL, Node.js…" rows={3} /></F>
+              <F label="Certifications"><Inp value={profile.certifications || ""} onChange={e => setProfile(p => ({ ...p, certifications: e.target.value }))} placeholder="AWS, Google Cloud, etc." /></F>
             </div>
-
-            {/* Background */}
             <div style={{ background: "#06101e", border: "1px solid #1e2d45", borderRadius: 14, padding: 18 }}>
               <div style={{ color: "#86efac", fontSize: 11, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 14 }}>Background</div>
-              <F label="Education"><Txt value={profile.education || ""} onChange={e => setProfile(p => ({ ...p, education: e.target.value }))} placeholder="B.E. Computer Science — Anna University 2026" rows={3} /></F>
+              <F label="Education"><Txt value={profile.education || ""} onChange={e => setProfile(p => ({ ...p, education: e.target.value }))} placeholder="B.E. Computer Science — 2026" rows={3} /></F>
               <F label="Experience"><Txt value={profile.experience || ""} onChange={e => setProfile(p => ({ ...p, experience: e.target.value }))} placeholder="Intern @ Company (Jun–Aug 2025)&#10;Project: …" rows={4} /></F>
               <F label="Languages"><Inp value={profile.languages || ""} onChange={e => setProfile(p => ({ ...p, languages: e.target.value }))} placeholder="English, Tamil, Hindi" /></F>
             </div>
-
-            {/* Job Preferences */}
             <div style={{ background: "#06101e", border: "1px solid #1e2d45", borderRadius: 14, padding: 18 }}>
               <div style={{ color: "#fde047", fontSize: 11, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 14 }}>Job Preferences</div>
               <F label="Target Roles"><Inp value={profile.target_roles || ""} onChange={e => setProfile(p => ({ ...p, target_roles: e.target.value }))} placeholder="Software Engineer, Data Analyst…" /></F>
               <F label="Target Locations"><Inp value={profile.target_locations || ""} onChange={e => setProfile(p => ({ ...p, target_locations: e.target.value }))} placeholder="Chennai, Bangalore, Remote" /></F>
               <F label="Expected Salary"><Inp value={profile.expected_salary || ""} onChange={e => setProfile(p => ({ ...p, expected_salary: e.target.value }))} placeholder="₹6–8 LPA" /></F>
               <F label="Portfolio"><Inp value={profile.portfolio || ""} onChange={e => setProfile(p => ({ ...p, portfolio: e.target.value }))} placeholder="yoursite.dev" /></F>
-
-              {/* Skills visualization */}
               {profile.skills && <div style={{ marginTop: 14, paddingTop: 14, borderTop: "1px solid #1e2d45" }}>
                 <div style={{ color: "#475569", fontSize: 10, fontWeight: 700, letterSpacing: "0.1em", textTransform: "uppercase", marginBottom: 8 }}>Your Skills ({profile.skills.split(",").filter(s => s.trim()).length})</div>
                 <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
-                  {profile.skills.split(",").filter(s => s.trim()).map(sk => (
-                    <span key={sk} style={{ background: "rgba(99,102,241,0.1)", border: "1px solid rgba(99,102,241,0.2)", color: "#a5b4fc", padding: "3px 10px", borderRadius: 999, fontSize: 11, fontWeight: 600 }}>{sk.trim()}</span>
-                  ))}
+                  {profile.skills.split(",").filter(s => s.trim()).map(sk => <span key={sk} style={{ background: "rgba(99,102,241,0.1)", border: "1px solid rgba(99,102,241,0.2)", color: "#a5b4fc", padding: "3px 10px", borderRadius: 999, fontSize: 11, fontWeight: 600 }}>{sk.trim()}</span>)}
                 </div>
               </div>}
             </div>
           </div>
-
-          <Btn v="pri" onClick={saveProfile} disabled={profileSaving} sx={{ width: "100%", justifyContent: "center", padding: "13px", fontSize: 14 }}>
-            {profileSaving ? "Saving…" : "💾 Save Profile"}
-          </Btn>
+          <Btn v="pri" onClick={saveProfile} disabled={profileSaving} sx={{ width: "100%", justifyContent: "center", padding: "13px", fontSize: 14 }}>{profileSaving ? "Saving…" : "💾 Save Profile"}</Btn>
         </div>}
 
-        {/* ═══ REPORTS TAB ═══ */}
+        {/* REPORTS */}
         {tab === "reports" && <div>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 20, flexWrap: "wrap", gap: 12 }}>
             <div>
               <h2 style={{ fontFamily: "'Syne',sans-serif", fontSize: 18, fontWeight: 800, color: "#f1f5f9", margin: 0 }}>📨 Daily Reports</h2>
-              <p style={{ color: "#475569", fontSize: 12, marginTop: 4 }}>Auto-generates a beautiful HTML email + Excel file, sends to your inbox and saves to Google Drive daily.</p>
+              <p style={{ color: "#475569", fontSize: 12, marginTop: 4 }}>Sends a styled HTML email + Excel to your inbox and saves to Google Drive → <strong>JobBoard Pro</strong> folder.</p>
             </div>
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
               <Btn v="ghost" onClick={previewReport}>👁 Preview</Btn>
@@ -1361,39 +1386,25 @@ Then review & save to your profile." rows={7} sx={{ fontFamily: "'JetBrains Mono
               <Btn v="vio" onClick={() => handleSendReport()} disabled={reportSending}>{reportSending ? <><span style={{ animation: "spin 0.8s linear infinite", display: "inline-block" }}>◌</span> Sending…</> : "📧 Send Report Now"}</Btn>
             </div>
           </div>
-
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginBottom: 20 }}>
-            {/* Config */}
             <div style={{ background: "#06101e", border: "1px solid #1e2d45", borderRadius: 16, padding: 22 }}>
-              <div style={{ color: "#60a5fa", fontSize: 11, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 16 }}>⚙️ Report Configuration</div>
+              <div style={{ color: "#60a5fa", fontSize: 11, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 16 }}>⚙️ Configuration</div>
               <F label="Send To Email"><Inp value={reportEmail} onChange={e => setReportEmail(e.target.value)} placeholder="your@email.com" type="email" /></F>
               <F label="Daily Send Time"><Inp value={reportTime} onChange={e => setReportTime(e.target.value)} type="time" /></F>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", background: "#070f1c", border: "1px solid #1e2d45", borderRadius: 10, padding: "14px 16px", marginBottom: 14 }}>
-                <div>
-                  <div style={{ color: "#e2e8f0", fontWeight: 600, fontSize: 13 }}>Auto Daily Report</div>
-                  <div style={{ color: "#475569", fontSize: 11, marginTop: 2 }}>Automatically send at configured time</div>
-                </div>
+                <div><div style={{ color: "#e2e8f0", fontWeight: 600, fontSize: 13 }}>Auto Daily Report</div><div style={{ color: "#475569", fontSize: 11, marginTop: 2 }}>Checked every minute</div></div>
                 <button onClick={() => setAutoReport(v => { localStorage.setItem("autoReport", String(!v)); return !v; })} style={{ width: 44, height: 24, borderRadius: 999, border: "none", cursor: "pointer", transition: "all .2s", background: autoReport ? "#4f46e5" : "#1e2d45", position: "relative" }}>
                   <span style={{ position: "absolute", top: 3, width: 18, height: 18, borderRadius: "50%", background: "#fff", transition: "all .2s", left: autoReport ? "23px" : "3px" }} />
                 </button>
               </div>
               <Btn v="pri" onClick={saveSettings} sx={{ width: "100%", justifyContent: "center", padding: "11px" }}>Save Settings</Btn>
               <div style={{ marginTop: 14, background: "rgba(6,182,212,0.05)", border: "1px solid rgba(6,182,212,0.12)", borderRadius: 10, padding: "12px 14px", fontSize: 11, color: "#06b6d4", lineHeight: 1.7 }}>
-                <strong>📋 What's included:</strong><br />
-                • Summary stats & status breakdown<br />
-                • Upcoming deadlines (this week)<br />
-                • Active interview pipeline<br />
-                • Recent applications table<br />
-                • Career tips & action items<br />
-                • Beautiful Excel (5 sheets) saved to Drive
+                <strong>📋 What's included:</strong><br />Summary stats · Interviews & offers · Deadlines this week · Recent applications · Career tips<br />+ Beautiful Excel (5 sheets) saved to <strong>Drive → JobBoard Pro</strong> folder
               </div>
             </div>
-
-            {/* Stats + Log */}
             <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-              {/* Stats */}
               <div style={{ background: "#06101e", border: "1px solid #1e2d45", borderRadius: 16, padding: 22 }}>
-                <div style={{ color: "#86efac", fontSize: 11, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 14 }}>📊 Report Stats</div>
+                <div style={{ color: "#86efac", fontSize: 11, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 14 }}>📊 Stats</div>
                 <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
                   {[["Reports Sent", reportLog.length, "#60a5fa"], ["Applications", jobs.length, "#86efac"], ["Interviews", stats.Interview || 0, "#22c55e"], ["Offers", stats.Offer || 0, "#fde047"]].map(([l, v, c]) => (
                     <div key={l} style={{ background: "#070f1c", border: "1px solid #1e2d45", borderRadius: 10, padding: "14px", textAlign: "center" }}>
@@ -1406,8 +1417,6 @@ Then review & save to your profile." rows={7} sx={{ fontFamily: "'JetBrains Mono
                   <span>Last sent:</span><span style={{ color: "#86efac", fontWeight: 600 }}>{reportLog[0].date} at {reportLog[0].time}</span>
                 </div>}
               </div>
-
-              {/* Log */}
               <div style={{ background: "#06101e", border: "1px solid #1e2d45", borderRadius: 16, padding: 22, flex: 1 }}>
                 <div style={{ color: "#a78bfa", fontSize: 11, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 14 }}>📋 Report History</div>
                 {reportLog.length === 0 ? <div style={{ color: "#1e2d45", fontSize: 13, textAlign: "center", padding: "24px 0" }}>No reports sent yet</div> :
@@ -1422,30 +1431,11 @@ Then review & save to your profile." rows={7} sx={{ fontFamily: "'JetBrains Mono
               </div>
             </div>
           </div>
-
-          {/* What's in the Excel */}
-          <div style={{ background: "#06101e", border: "1px solid #1e2d45", borderRadius: 16, padding: 22 }}>
-            <div style={{ color: "#fde047", fontSize: 11, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 16 }}>📊 Excel File Contents (5 Sheets)</div>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(200px,1fr))", gap: 10 }}>
-              {[
-                ["📋 Active Applications", "All non-rejected/withdrawn jobs with full details", "#60a5fa"],
-                ["📁 All Applications", "Complete history of every job tracked", "#94a3b8"],
-                ["📊 Summary", "Stats, sources, locations, companies breakdown", "#86efac"],
-                ["🎙 Interview Pipeline", "Current interviews & offers in progress", "#fde047"],
-                ["⏰ Deadlines", "Jobs with deadlines in the next 14 days", "#f97316"],
-              ].map(([title, desc, col]) => (
-                <div key={title} style={{ background: "#070f1c", border: "1px solid #1e2d45", borderRadius: 10, padding: "14px" }}>
-                  <div style={{ color: col, fontWeight: 700, fontSize: 12, marginBottom: 5 }}>{title}</div>
-                  <div style={{ color: "#475569", fontSize: 11, lineHeight: 1.5 }}>{desc}</div>
-                </div>
-              ))}
-            </div>
-          </div>
         </div>}
 
       </div>
 
-      {/* ══════════════ MODALS ══════════════ */}
+      {/* ══════ MODALS ══════ */}
 
       {/* Settings */}
       {showSettings && <Modal title="⚙️ Settings" onClose={() => setShowSettings(false)}>
@@ -1453,7 +1443,7 @@ Then review & save to your profile." rows={7} sx={{ fontFamily: "'JetBrains Mono
           <F label="NVIDIA/DeepSeek API Key"><Inp type="password" value={geminiKey} onChange={e => setGeminiKey(e.target.value)} placeholder="nvapi-…" /></F>
           <F label="API Proxy URL"><Inp value={proxyUrl} onChange={e => setProxyUrl(e.target.value)} placeholder="/api/ai" /></F>
           <F label="AI Model"><Inp value={aiModel} onChange={e => setAiModel(e.target.value)} placeholder="deepseek-ai/deepseek-r1" /></F>
-          <F label="Google Client ID"><Inp value={clientId} onChange={e => setClientId(e.target.value)} placeholder="…apps.googleusercontent.com" /></F>
+          <F label="Google Client ID" hint="For Gmail, Drive, Calendar"><Inp value={clientId} onChange={e => setClientId(e.target.value)} placeholder="…apps.googleusercontent.com" /></F>
           <F label="Report Email"><Inp type="email" value={reportEmail} onChange={e => setReportEmail(e.target.value)} placeholder="daily@email.com" /></F>
           <F label="Daily Send Time"><Inp type="time" value={reportTime} onChange={e => setReportTime(e.target.value)} /></F>
         </div>
@@ -1464,8 +1454,11 @@ Then review & save to your profile." rows={7} sx={{ fontFamily: "'JetBrains Mono
             <F label="App Key"><Inp type="password" value={adzunaKey} onChange={e => setAdzunaKey(e.target.value)} placeholder="your_app_key" /></F>
           </div>
         </div>
+        <div style={{ background: "rgba(245,158,11,0.06)", border: "1px solid rgba(245,158,11,0.15)", borderRadius: 10, padding: "12px 16px", marginBottom: 14, fontSize: 12, color: "#fbbf24", lineHeight: 1.6 }}>
+          ℹ️ <strong>Email/Password users:</strong> Google features (Gmail scan, Drive, Calendar, email reports) require the Google Client ID. Set it above. You'll be prompted to authorize once per session — after that, no more popups!
+        </div>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", background: "#070f1c", border: "1px solid #1e2d45", borderRadius: 10, padding: "14px 16px", marginBottom: 16 }}>
-          <div><div style={{ color: "#e2e8f0", fontWeight: 600, fontSize: 13 }}>Auto Daily Report</div><div style={{ color: "#475569", fontSize: 11, marginTop: 2 }}>Auto-send at {reportTime}</div></div>
+          <div><div style={{ color: "#e2e8f0", fontWeight: 600, fontSize: 13 }}>Auto Daily Report</div><div style={{ color: "#475569", fontSize: 11, marginTop: 2 }}>Checked every minute at {reportTime}</div></div>
           <button onClick={() => setAutoReport(v => !v)} style={{ width: 44, height: 24, borderRadius: 999, border: "none", cursor: "pointer", background: autoReport ? "#4f46e5" : "#1e2d45", position: "relative", transition: "background .2s" }}>
             <span style={{ position: "absolute", top: 3, width: 18, height: 18, borderRadius: "50%", background: "#fff", transition: "left .2s", left: autoReport ? "23px" : "3px" }} />
           </button>
@@ -1505,103 +1498,56 @@ Then review & save to your profile." rows={7} sx={{ fontFamily: "'JetBrains Mono
         <Btn v="pri" onClick={saveJob} sx={{ width: "100%", justifyContent: "center", marginTop: 6, padding: "12px", fontSize: 13 }}>{editId ? "Save Changes" : "Add to Tracker"}</Btn>
       </Modal>}
 
-      {/* Job Search Modal */}
-      {showSearch && <Modal title="🔍 Live Job Search" onClose={() => { setShowSearch(false); setSr([]); setSErr(""); }} wide>
-        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 14, padding: "8px 14px", background: "#070f1c", borderRadius: 10, border: "1px solid #1e2d45" }}>
-          <span style={{ width: 8, height: 8, borderRadius: "50%", background: adzunaId && adzunaKey ? "#22c55e" : "#f59e0b", flexShrink: 0, boxShadow: adzunaId && adzunaKey ? "0 0 8px #22c55e" : "none" }} />
-          <span style={{ color: adzunaId && adzunaKey ? "#86efac" : "#fbbf24", fontSize: 12 }}>{adzunaId && adzunaKey ? "Live Adzuna job data" : "Add Adzuna credentials in ⚙️ Settings"}</span>
-          {sTotalResults > 0 && <span style={{ marginLeft: "auto", color: "#334155", fontSize: 11 }}>{sTotalResults.toLocaleString()} total</span>}
-          {profile.skills && <span style={{ color: "#a5b4fc", fontSize: 11 }}>⚡ Match scoring active</span>}
-        </div>
+      {/* Job Search */}
+      {showSearch && <Modal title="🔍 Live Job Search — Adzuna" onClose={() => { setShowSearch(false); setSr([]); setSErr(""); }} wide>
         <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
           <div style={{ flex: 1, position: "relative" }}>
             <span style={{ position: "absolute", left: 12, top: "50%", transform: "translateY(-50%)", fontSize: 14, pointerEvents: "none", opacity: .4 }}>🔍</span>
-            <input value={sq} onChange={e => setSq(e.target.value)} onKeyDown={e => e.key === "Enter" && doSearch()} placeholder='e.g. "React developer", "Python analyst", "Java backend"…' style={{ width: "100%", background: "#070f1c", border: "1px solid #2d4a6b", borderRadius: 10, padding: "12px 14px 12px 38px", color: "#e2e8f0", fontSize: 13, outline: "none", boxSizing: "border-box", fontFamily: "inherit" }} onFocus={e => e.target.style.borderColor = "#4f46e5"} onBlur={e => e.target.style.borderColor = "#2d4a6b"} />
+            <input value={sq} onChange={e => setSq(e.target.value)} onKeyDown={e => e.key === "Enter" && doSearch()} placeholder='e.g. "React developer", "Python analyst"…' style={{ width: "100%", background: "#070f1c", border: "1px solid #2d4a6b", borderRadius: 10, padding: "12px 14px 12px 38px", color: "#e2e8f0", fontSize: 13, outline: "none", boxSizing: "border-box", fontFamily: "inherit" }} onFocus={e => e.target.style.borderColor = "#4f46e5"} onBlur={e => e.target.style.borderColor = "#2d4a6b"} />
           </div>
           <Btn v="pri" onClick={() => doSearch()} disabled={sLoad} sx={{ padding: "12px 20px", fontSize: 13, fontWeight: 700 }}>{sLoad ? <><span style={{ animation: "spin 0.8s linear infinite", display: "inline-block" }}>◌</span> Searching…</> : "Search"}</Btn>
         </div>
-
-        {/* Experience Level */}
         <div style={{ marginBottom: 14 }}>
           <div style={{ color: "#475569", fontSize: 10, fontWeight: 700, letterSpacing: "0.1em", textTransform: "uppercase", marginBottom: 8 }}>Experience Level</div>
           <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
             {EXPERIENCE_LEVELS.map(lvl => (
-              <button key={lvl.value} onClick={() => setSExperience(sExperience === lvl.value ? "" : lvl.value)} style={{ padding: "5px 13px", borderRadius: 20, fontSize: 11, fontWeight: 600, cursor: "pointer", background: sExperience === lvl.value ? `${lvl.color}18` : "transparent", border: `1px solid ${sExperience === lvl.value ? lvl.color : "#1e2d45"}`, color: sExperience === lvl.value ? lvl.color : "#64748b", fontFamily: "inherit", transition: "all .15s" }}>
-                {lvl.label}
-              </button>
+              <button key={lvl.value} onClick={() => setSExperience(sExperience === lvl.value ? "" : lvl.value)} style={{ padding: "5px 13px", borderRadius: 20, fontSize: 11, fontWeight: 600, cursor: "pointer", background: sExperience === lvl.value ? `${lvl.color}18` : "transparent", border: `1px solid ${sExperience === lvl.value ? lvl.color : "#1e2d45"}`, color: sExperience === lvl.value ? lvl.color : "#64748b", fontFamily: "inherit", transition: "all .15s" }}>{lvl.label}</button>
             ))}
           </div>
         </div>
-
-        {/* Saved searches */}
         {savedSearches.length > 0 && <div style={{ marginBottom: 14 }}>
-          <div style={{ color: "#475569", fontSize: 10, fontWeight: 700, letterSpacing: "0.1em", textTransform: "uppercase", marginBottom: 8 }}>Recent</div>
+          <div style={{ color: "#475569", fontSize: 10, fontWeight: 700, letterSpacing: "0.1em", textTransform: "uppercase", marginBottom: 8 }}>Saved Searches</div>
           <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
             {savedSearches.map((s, i) => <button key={i} onClick={() => { setSq(s.sq); setSLocation(s.sLocation); setSJobType(s.sJobType); setSSalaryMin(s.sSalaryMin); setSCategory(s.sCategory); setSExperience(s.sExperience); }} style={{ padding: "4px 12px", borderRadius: 999, fontSize: 11, background: "rgba(99,102,241,0.08)", border: "1px solid rgba(99,102,241,0.2)", color: "#818cf8", cursor: "pointer", fontFamily: "inherit" }}>🔖 {s.label}</button>)}
           </div>
         </div>}
-
-        {/* Filters */}
-        <button onClick={() => setShowFilters(f => !f)} style={{ background: "transparent", border: "1px solid #1e2d45", borderRadius: 8, padding: "6px 14px", color: showFilters ? "#818cf8" : "#475569", fontSize: 11, fontWeight: 600, cursor: "pointer", marginBottom: showFilters ? 14 : 12, display: "flex", alignItems: "center", gap: 8, fontFamily: "inherit", transition: "all .15s" }}>
-          <span style={{ transform: showFilters ? "rotate(180deg)" : "none", transition: "transform .2s", display: "inline-block" }}>▼</span>
-          Advanced Filters {activeFilters > 0 && <span style={{ background: "#4f46e5", color: "#fff", borderRadius: 999, padding: "1px 7px", fontSize: 10, fontWeight: 700 }}>{activeFilters}</span>}
-        </button>
-
-        {showFilters && <div style={{ background: "#070f1c", border: "1px solid #1e2d45", borderRadius: 12, padding: 18, marginBottom: 14 }}>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-            <F label="📍 Location"><input value={sLocation} onChange={e => setSLocation(e.target.value)} placeholder="Chennai, Bangalore, Remote…" style={{ width: "100%", background: "#06101e", border: "1px solid #1e2d45", borderRadius: 8, padding: "9px 12px", color: "#e2e8f0", fontSize: 12, outline: "none", fontFamily: "inherit", boxSizing: "border-box" }} /></F>
-            <F label="💼 Contract Type"><select value={sJobType} onChange={e => setSJobType(e.target.value)} style={{ width: "100%", background: "#06101e", border: "1px solid #1e2d45", borderRadius: 8, padding: "9px 12px", color: "#e2e8f0", fontSize: 12, outline: "none", fontFamily: "inherit" }}><option value="all">All Types</option><option value="full-time">Full-Time</option><option value="part-time">Part-Time</option><option value="contract">Contract</option><option value="permanent">Permanent</option></select></F>
-            <F label="🏷️ Category"><select value={sCategory} onChange={e => setSCategory(e.target.value)} style={{ width: "100%", background: "#06101e", border: "1px solid #1e2d45", borderRadius: 8, padding: "9px 12px", color: "#e2e8f0", fontSize: 12, outline: "none", fontFamily: "inherit" }}>{ADZUNA_CATEGORIES.map(c => <option key={c.value} value={c.value}>{c.label}</option>)}</select></F>
-            <F label="💰 Min Salary (₹/yr)"><input type="number" value={sSalaryMin} onChange={e => setSSalaryMin(e.target.value)} placeholder="e.g. 300000 = ₹3 LPA" style={{ width: "100%", background: "#06101e", border: "1px solid #1e2d45", borderRadius: 8, padding: "9px 12px", color: "#e2e8f0", fontSize: 12, outline: "none", fontFamily: "inherit", boxSizing: "border-box" }} /></F>
-            <div style={{ gridColumn: "1 / -1" }}>
-              <div style={{ color: "#475569", fontSize: 10, fontWeight: 700, letterSpacing: "0.1em", textTransform: "uppercase", marginBottom: 8 }}>Quick Locations</div>
-              <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>{["Chennai", "Bangalore", "Mumbai", "Hyderabad", "Pune", "Delhi NCR", "Coimbatore", "Remote"].map(loc => <button key={loc} className={`chip${sLocation === loc ? " active" : ""}`} onClick={() => setSLocation(sLocation === loc ? "" : loc)}>{loc}</button>)}</div>
-            </div>
-            <div style={{ gridColumn: "1 / -1", display: "flex", justifyContent: "space-between", paddingTop: 4 }}>
-              <button onClick={() => { setSLocation(""); setSJobType("all"); setSSalaryMin(""); setSCategory(""); }} style={{ background: "transparent", border: "none", color: "#ef4444", fontSize: 11, cursor: "pointer", fontFamily: "inherit", fontWeight: 600 }}>✕ Reset all</button>
-              <Btn v="ghost" onClick={saveSearch} sx={{ fontSize: 11, padding: "5px 12px" }}>🔖 Save Search</Btn>
-            </div>
-          </div>
-        </div>}
-
-        {sLoad && !sr.length && <div style={{ textAlign: "center", padding: "48px 20px", color: "#334155" }}><div style={{ fontSize: 36, display: "inline-block", animation: "spin 1.5s linear infinite", marginBottom: 12 }}>🔍</div><p style={{ fontSize: 13, color: "#475569" }}>Searching Adzuna…</p></div>}
+        <div style={{ display: "flex", gap: 10, marginBottom: 14, flexWrap: "wrap" }}>
+          <input value={sLocation} onChange={e => setSLocation(e.target.value)} placeholder="📍 Location" style={{ flex: 1, minWidth: 140, background: "#070f1c", border: "1px solid #1e2d45", borderRadius: 8, padding: "9px 12px", color: "#e2e8f0", fontSize: 12, outline: "none", fontFamily: "inherit" }} />
+          <select value={sCategory} onChange={e => setSCategory(e.target.value)} style={{ background: "#070f1c", border: "1px solid #1e2d45", borderRadius: 8, padding: "9px 12px", color: "#e2e8f0", fontSize: 12, outline: "none", fontFamily: "inherit" }}>{ADZUNA_CATEGORIES.map(c => <option key={c.value} value={c.value}>{c.label}</option>)}</select>
+          <select value={sJobType} onChange={e => setSJobType(e.target.value)} style={{ background: "#070f1c", border: "1px solid #1e2d45", borderRadius: 8, padding: "9px 12px", color: "#e2e8f0", fontSize: 12, outline: "none", fontFamily: "inherit" }}>
+            <option value="all">All Types</option><option value="full-time">Full-Time</option><option value="part-time">Part-Time</option><option value="contract">Contract</option>
+          </select>
+          <Btn v="ghost" onClick={saveSearch} sx={{ fontSize: 11 }}>🔖 Save</Btn>
+        </div>
+        {sTotalResults > 0 && <div style={{ color: "#334155", fontSize: 12, marginBottom: 10 }}>{sr.length} of {sTotalResults.toLocaleString()} results</div>}
         {sErr && <div style={{ background: "rgba(220,38,38,0.06)", border: "1px solid #7f1d1d", borderRadius: 10, padding: "12px 16px", color: "#f87171", fontSize: 12, marginBottom: 14 }}>⚠️ {sErr}</div>}
-
         {sr.length > 0 && <>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
-            <span style={{ color: "#94a3b8", fontSize: 13, fontWeight: 600 }}>{sr.length} jobs{sTotalResults > sr.length && ` of ${sTotalResults.toLocaleString()}`}</span>
-            <span style={{ color: "#334155", fontSize: 11 }}>Click + to add to tracker</span>
-          </div>
           <div style={{ display: "flex", flexDirection: "column", gap: 10, maxHeight: 500, overflowY: "auto", paddingRight: 4 }}>
             {sr.map((r, i) => (
               <div key={i} className="search-card">
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", gap: 12 }}>
                   <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 8, marginBottom: 6 }}>
-                      <div>
-                        <div style={{ color: "#e2e8f0", fontWeight: 700, fontSize: 14, lineHeight: 1.3, marginBottom: 2 }}>
-                          {r.applylink ? <a href={r.applylink} target="_blank" rel="noreferrer" style={{ color: "#93c5fd", textDecoration: "none" }}>{r.title} <span style={{ fontSize: 11, opacity: .6 }}>↗</span></a> : r.title}
-                        </div>
-                        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-                          <span style={{ color: "#64748b", fontSize: 12, fontWeight: 600 }}>{r.company}</span>
-                          {r.location && <span style={{ color: "#475569", fontSize: 11 }}>📍 {r.location}</span>}
-                        </div>
-                      </div>
-                      <div style={{ display: "flex", gap: 5, alignItems: "center", flexShrink: 0 }}>
-                        {r.matchScore > 0 && <MatchBadge score={r.matchScore} />}
-                        {r.postedDaysAgo !== null && <span style={{ color: r.postedDaysAgo <= 3 ? "#86efac" : r.postedDaysAgo <= 7 ? "#fbbf24" : "#475569", fontSize: 10, fontWeight: 600, background: r.postedDaysAgo <= 3 ? "rgba(34,197,94,0.08)" : r.postedDaysAgo <= 7 ? "rgba(245,158,11,0.08)" : "transparent", padding: "2px 8px", borderRadius: 999, border: `1px solid ${r.postedDaysAgo <= 3 ? "rgba(34,197,94,0.2)" : r.postedDaysAgo <= 7 ? "rgba(245,158,11,0.2)" : "transparent"}` }}>
-                          {r.postedDaysAgo === 0 ? "Today" : r.postedDaysAgo === 1 ? "1d ago" : `${r.postedDaysAgo}d ago`}
-                        </span>}
-                      </div>
+                    <div style={{ color: "#e2e8f0", fontWeight: 700, fontSize: 14, marginBottom: 4 }}>
+                      {r.applylink ? <a href={r.applylink} target="_blank" rel="noreferrer" style={{ color: "#93c5fd", textDecoration: "none" }}>{r.title} <span style={{ fontSize: 11, opacity: .6 }}>↗</span></a> : r.title}
                     </div>
-                    <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginBottom: 8 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 6 }}>
+                      <span style={{ color: "#64748b", fontSize: 12, fontWeight: 600 }}>{r.company}</span>
+                      {r.location && <span style={{ color: "#475569", fontSize: 11 }}>📍 {r.location}</span>}
                       {r.salary && <span style={{ background: "rgba(167,139,250,0.1)", border: "1px solid rgba(167,139,250,0.2)", color: "#a78bfa", padding: "2px 9px", borderRadius: 999, fontSize: 11, fontWeight: 700 }}>{r.salary}</span>}
-                      <span style={{ background: "#070f1c", border: "1px solid #1e2d45", color: "#64748b", padding: "2px 9px", borderRadius: 999, fontSize: 10 }}>{r.type}</span>
-                      {r.category && <span style={{ color: "#475569", fontSize: 10 }}>🏷 {r.category}</span>}
+                      {r.matchScore > 0 && <MatchBadge score={r.matchScore} />}
+                      {r.postedDaysAgo !== null && <span style={{ color: r.postedDaysAgo <= 3 ? "#86efac" : "#475569", fontSize: 10 }}>{r.postedDaysAgo === 0 ? "Today" : `${r.postedDaysAgo}d ago`}</span>}
                     </div>
-                    {r.skills && <div style={{ display: "flex", gap: 5, flexWrap: "wrap", marginBottom: 8 }}>
-                      {r.skills.split(", ").map(sk => <span key={sk} style={{ background: "rgba(99,102,241,0.08)", border: "1px solid rgba(99,102,241,0.2)", color: "#a5b4fc", padding: "2px 8px", borderRadius: 999, fontSize: 10, fontWeight: 600 }}>{sk}</span>)}
-                    </div>}
+                    {r.skills && <div style={{ display: "flex", gap: 5, flexWrap: "wrap", marginBottom: 6 }}>{r.skills.split(", ").map(sk => <span key={sk} style={{ background: "rgba(99,102,241,0.08)", border: "1px solid rgba(99,102,241,0.2)", color: "#a5b4fc", padding: "2px 8px", borderRadius: 999, fontSize: 10, fontWeight: 600 }}>{sk}</span>)}</div>}
                     {r.description && <div style={{ color: "#64748b", fontSize: 11, lineHeight: 1.6 }}>{r.description}</div>}
                   </div>
                   <div style={{ display: "flex", flexDirection: "column", gap: 6, flexShrink: 0 }}>
@@ -1628,7 +1574,7 @@ Then review & save to your profile." rows={7} sx={{ fontFamily: "'JetBrains Mono
             </div>
           ))}
         </div>
-        {profile.skills && showDetail.skills && <div style={{ background: "rgba(34,197,94,0.06)", border: "1px solid rgba(34,197,94,0.15)", borderRadius: 8, padding: "10px 14px", marginBottom: 14, fontSize: 12, color: "#86efac" }}>⚡ Your profile match: <strong>{calcMatchScore(showDetail.skills, profile.skills)}%</strong></div>}
+        {profile.skills && showDetail.skills && <div style={{ background: "rgba(34,197,94,0.06)", border: "1px solid rgba(34,197,94,0.15)", borderRadius: 8, padding: "10px 14px", marginBottom: 14, fontSize: 12, color: "#86efac" }}>⚡ Profile match: <strong>{calcMatchScore(showDetail.skills, profile.skills)}%</strong></div>}
         {showDetail.notes && <div style={{ background: "#070f1c", border: "1px solid #1e2d45", borderRadius: 10, padding: 14, marginBottom: 14 }}><div style={{ color: "#334155", fontSize: 9, fontWeight: 700, letterSpacing: "0.1em", marginBottom: 6 }}>NOTES</div><div style={{ color: "#64748b", fontSize: 12, lineHeight: 1.7 }}>{showDetail.notes}</div></div>}
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
           {showDetail.applylink && <a href={showDetail.applylink} target="_blank" rel="noreferrer" style={{ textDecoration: "none" }}><Btn v="pri">Apply ↗</Btn></a>}
@@ -1640,7 +1586,7 @@ Then review & save to your profile." rows={7} sx={{ fontFamily: "'JetBrains Mono
 
       {/* Interview Prep */}
       {showPrep && <Modal title={`🎙 Interview Prep — ${showPrep.title}`} onClose={() => { setShowPrep(null); setPrepOut(""); }} wide>
-        {prepLoad && <div style={{ textAlign: "center", padding: "40px", color: "#334155" }}><div style={{ fontSize: 32, display: "inline-block", animation: "spin 1.2s linear infinite", marginBottom: 12 }}>⚡</div><p style={{ fontSize: 12, color: "#475569" }}>Generating personalized prep guide…{profile.skills ? " (using your profile skills)" : ""}</p></div>}
+        {prepLoad && <div style={{ textAlign: "center", padding: "40px", color: "#334155" }}><div style={{ fontSize: 32, display: "inline-block", animation: "spin 1.2s linear infinite", marginBottom: 12 }}>⚡</div><p style={{ fontSize: 12, color: "#475569" }}>Generating personalized prep guide…</p></div>}
         {!prepLoad && prepOut && <div style={{ background: "#070f1c", border: "1px solid #1e2d45", borderRadius: 12, padding: 18, whiteSpace: "pre-wrap", lineHeight: 1.8, fontSize: 13, color: "#94a3b8", maxHeight: 520, overflowY: "auto" }}>{prepOut}</div>}
         {!prepOut && !prepLoad && <Btn v="pri" onClick={() => doPrep(showPrep)}>⚡ Generate Prep Guide</Btn>}
         {prepOut && !prepLoad && <div style={{ display: "flex", gap: 8, marginTop: 14 }}>
@@ -1652,8 +1598,10 @@ Then review & save to your profile." rows={7} sx={{ fontFamily: "'JetBrains Mono
 
       {/* Cover Letter */}
       {showCover && <Modal title={`✉ Cover Letter — ${showCover.title} @ ${showCover.company}`} onClose={() => { setShowCover(null); setCoverOut(""); }} wide>
-        {profile.skills ? <div style={{ background: "rgba(34,197,94,0.06)", border: "1px solid rgba(34,197,94,0.15)", borderRadius: 8, padding: "10px 14px", marginBottom: 14, fontSize: 12, color: "#86efac" }}>✓ Using your profile: <strong>{profile.full_name}</strong> · {profile.headline}</div> :
-          <F label="Your Background (optional)"><Txt value={bio} onChange={e => setBio(e.target.value)} placeholder="e.g. Final year BE CSE with ML projects…" rows={2} /></F>}
+        {profile.skills
+          ? <div style={{ background: "rgba(34,197,94,0.06)", border: "1px solid rgba(34,197,94,0.15)", borderRadius: 8, padding: "10px 14px", marginBottom: 14, fontSize: 12, color: "#86efac" }}>✓ Using profile: <strong>{profile.full_name}</strong> · {profile.headline}</div>
+          : <F label="Your Background (optional)"><Txt value={bio} onChange={e => setBio(e.target.value)} placeholder="e.g. Final year BE CSE with ML projects…" rows={2} /></F>
+        }
         <Btn v="amb" onClick={() => doCover(showCover)} disabled={coverLoad}>{coverLoad ? "Generating…" : "⚡ Generate Cover Letter"}</Btn>
         {coverLoad && <div style={{ textAlign: "center", padding: "24px", color: "#475569", animation: "pulse 1.2s infinite", marginTop: 10 }}>✍️ Writing your cover letter…</div>}
         {coverOut && !coverLoad && <>
