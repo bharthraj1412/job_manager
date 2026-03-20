@@ -1033,7 +1033,7 @@ export default function Dashboard({ session }) {
   }, []);
 
   // ── Settings (persisted to localStorage) ──
-  const [geminiKey, setGeminiKey] = useState(() => localStorage.getItem("geminiKey") || NVIDIA_API_KEY);
+  const [geminiKey, setGeminiKey] = useState(() => localStorage.getItem("geminiKey") || "");
   const [clientId, setClientId] = useState(() => localStorage.getItem("googleClientId") || import.meta.env.VITE_GOOGLE_CLIENT_ID || "");
   const [aiModel, setAiModel] = useState(() => localStorage.getItem("aiModel") || NVIDIA_MODEL);
   const [proxyUrl, setProxyUrl] = useState(() => localStorage.getItem("proxyUrl") || NVIDIA_API_URL);
