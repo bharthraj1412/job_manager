@@ -246,6 +246,390 @@ async function loadPdfJs() {
   return window.pdfjsLib;
 }
 
+// ── jsPDF loader (for PDF export) ────────────────────────────────────────────
+async function loadJsPDF() {
+  if (window.jspdf?.jsPDF) return window.jspdf.jsPDF;
+  await new Promise((resolve, reject) => {
+    const s = document.createElement("script");
+    s.src = "https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js";
+    s.onload = resolve; s.onerror = reject;
+    document.body.appendChild(s);
+  });
+  // load autotable plugin
+  await new Promise((resolve, reject) => {
+    const s = document.createElement("script");
+    s.src = "https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js";
+    s.onload = resolve; s.onerror = reject;
+    document.body.appendChild(s);
+  });
+  return window.jspdf.jsPDF;
+}
+
+// ── Generate Progress Report PDF ──────────────────────────────────────────────
+async function generateProgressPDF(jobs, reportDate, profileName) {
+  const JsPDF = await loadJsPDF();
+  const doc = new JsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
+  const pw = doc.internal.pageSize.getWidth();
+
+  // Header gradient bar
+  doc.setFillColor(13, 21, 38);
+  doc.rect(0, 0, pw, 38, "F");
+  doc.setFillColor(29, 78, 216);
+  doc.rect(0, 36, pw, 2, "F");
+
+  // Title
+  doc.setTextColor(241, 245, 249);
+  doc.setFontSize(22); doc.setFont("helvetica", "bold");
+  doc.text("🎯 JobBoard Pro", 14, 16);
+  doc.setFontSize(9); doc.setFont("helvetica", "normal");
+  doc.setTextColor(148, 163, 184);
+  doc.text(`Daily Progress Report  ·  ${reportDate}${profileName ? "  ·  " + profileName : ""}`, 14, 28);
+
+  let y = 48;
+
+  // Stats row
+  const stats = STATUS.reduce((a, s) => { a[s] = jobs.filter(j => j.status === s).length; return a; }, {});
+  const totalActive = jobs.filter(j => !["Rejected", "Withdrawn"].includes(j.status)).length;
+  const responseRate = jobs.length ? Math.round(((stats.Interview || 0) + (stats.Offer || 0) + (stats.Rejected || 0)) / jobs.length * 100) : 0;
+  const statBoxes = [
+    ["Total", jobs.length, [96, 165, 250]],
+    ["Active", totalActive, [134, 239, 172]],
+    ["Interviews", stats.Interview || 0, [34, 197, 94]],
+    ["Offers", stats.Offer || 0, [253, 224, 71]],
+    ["Response", responseRate + "%", [192, 132, 252]],
+  ];
+  const bw = (pw - 28) / statBoxes.length;
+  statBoxes.forEach(([label, val, rgb], i) => {
+    const bx = 14 + i * bw;
+    doc.setFillColor(6, 16, 30); doc.roundedRect(bx, y, bw - 3, 22, 3, 3, "F");
+    doc.setTextColor(...rgb); doc.setFontSize(16); doc.setFont("helvetica", "bold");
+    doc.text(String(val), bx + (bw - 3) / 2, y + 13, { align: "center" });
+    doc.setTextColor(71, 85, 105); doc.setFontSize(7); doc.setFont("helvetica", "normal");
+    doc.text(label.toUpperCase(), bx + (bw - 3) / 2, y + 20, { align: "center" });
+  });
+  y += 30;
+
+  // Status breakdown table
+  doc.setTextColor(148, 163, 184); doc.setFontSize(8); doc.setFont("helvetica", "bold");
+  doc.text("STATUS BREAKDOWN", 14, y); y += 5;
+  doc.autoTable({
+    startY: y,
+    head: [["Status", "Count", "% of Total"]],
+    body: STATUS.map(s => [s, stats[s] || 0, jobs.length ? Math.round((stats[s] || 0) / jobs.length * 100) + "%" : "—"]),
+    theme: "plain",
+    styles: { fontSize: 9, textColor: [148, 163, 184], fillColor: [6, 16, 30], cellPadding: 3 },
+    headStyles: { fillColor: [7, 17, 31], textColor: [71, 85, 105], fontStyle: "bold", fontSize: 8 },
+    alternateRowStyles: { fillColor: [10, 22, 40] },
+    margin: { left: 14, right: 14 },
+  });
+  y = doc.lastAutoTable.finalY + 8;
+
+  // Interviews section
+  const interviews = jobs.filter(j => j.status === "Interview");
+  if (interviews.length) {
+    doc.setTextColor(134, 239, 172); doc.setFontSize(8); doc.setFont("helvetica", "bold");
+    doc.text("🎙 ACTIVE INTERVIEWS", 14, y); y += 5;
+    doc.autoTable({
+      startY: y,
+      head: [["Role", "Company", "Location", "Deadline"]],
+      body: interviews.map(j => [j.title, j.company, j.location || "—", j.deadline || "—"]),
+      theme: "plain",
+      styles: { fontSize: 9, textColor: [148, 163, 184], fillColor: [6, 16, 30], cellPadding: 3 },
+      headStyles: { fillColor: [5, 46, 22], textColor: [134, 239, 172], fontStyle: "bold", fontSize: 8 },
+      alternateRowStyles: { fillColor: [10, 22, 40] },
+      margin: { left: 14, right: 14 },
+    });
+    y = doc.lastAutoTable.finalY + 8;
+  }
+
+  // Upcoming deadlines
+  const upcoming = jobs.filter(j => j.deadline && daysDiff(j.deadline) >= 0 && daysDiff(j.deadline) <= 7);
+  if (upcoming.length) {
+    if (y > 240) { doc.addPage(); y = 20; }
+    doc.setTextColor(251, 191, 36); doc.setFontSize(8); doc.setFont("helvetica", "bold");
+    doc.text("⏰ DEADLINES THIS WEEK", 14, y); y += 5;
+    doc.autoTable({
+      startY: y,
+      head: [["Role", "Company", "Status", "Days Left"]],
+      body: upcoming.sort((a, b) => new Date(a.deadline) - new Date(b.deadline)).map(j => [j.title, j.company, j.status, daysDiff(j.deadline) === 0 ? "Today!" : daysDiff(j.deadline) + "d left"]),
+      theme: "plain",
+      styles: { fontSize: 9, textColor: [148, 163, 184], fillColor: [6, 16, 30], cellPadding: 3 },
+      headStyles: { fillColor: [28, 16, 0], textColor: [251, 191, 36], fontStyle: "bold", fontSize: 8 },
+      alternateRowStyles: { fillColor: [10, 22, 40] },
+      margin: { left: 14, right: 14 },
+    });
+    y = doc.lastAutoTable.finalY + 8;
+  }
+
+  // Recent applications
+  const recent = jobs.filter(j => j.status === "Applied").slice(0, 8);
+  if (recent.length) {
+    if (y > 220) { doc.addPage(); y = 20; }
+    doc.setTextColor(103, 232, 249); doc.setFontSize(8); doc.setFont("helvetica", "bold");
+    doc.text("✉️ RECENTLY APPLIED", 14, y); y += 5;
+    doc.autoTable({
+      startY: y,
+      head: [["Role", "Company", "Location", "Salary"]],
+      body: recent.map(j => [j.title, j.company, j.location || "—", j.salary || "—"]),
+      theme: "plain",
+      styles: { fontSize: 9, textColor: [148, 163, 184], fillColor: [6, 16, 30], cellPadding: 3 },
+      headStyles: { fillColor: [12, 34, 54], textColor: [103, 232, 249], fontStyle: "bold", fontSize: 8 },
+      alternateRowStyles: { fillColor: [10, 22, 40] },
+      margin: { left: 14, right: 14 },
+    });
+  }
+
+  // Footer
+  const totalPages = doc.internal.getNumberOfPages();
+  for (let i = 1; i <= totalPages; i++) {
+    doc.setPage(i);
+    doc.setFillColor(6, 13, 26); doc.rect(0, 285, pw, 12, "F");
+    doc.setTextColor(71, 85, 105); doc.setFontSize(7);
+    doc.text(`JobBoard Pro  ·  Generated ${reportDate}  ·  Page ${i}/${totalPages}`, pw / 2, 291, { align: "center" });
+  }
+
+  return doc;
+}
+
+// ── Job Digest HTML email ──────────────────────────────────────────────────────
+function buildJobDigestHTML(results, searchDate, profileName, keywords) {
+  const topJobs = results.slice(0, 20);
+  const byScore = [...topJobs].sort((a, b) => (b.matchScore || 0) - (a.matchScore || 0));
+
+  const jobRows = topJobs.map((r, i) => `
+    <tr style="border-bottom:1px solid #0f1c2e;">
+      <td style="padding:10px 12px;color:#e2e8f0;font-weight:600;font-size:13px;">
+        ${r.applylink ? `<a href="${r.applylink}" style="color:#60a5fa;text-decoration:none;">${r.title}</a>` : r.title}
+        ${r.matchScore > 0 ? `<span style="background:rgba(34,197,94,0.1);border:1px solid rgba(34,197,94,0.3);color:#86efac;padding:1px 7px;border-radius:999px;font-size:10px;margin-left:6px;">⚡${r.matchScore}%</span>` : ""}
+      </td>
+      <td style="padding:10px 12px;color:#64748b;">${r.company}</td>
+      <td style="padding:10px 12px;color:#475569;font-size:12px;">${r.location || "—"}</td>
+      <td style="padding:10px 12px;color:#a78bfa;font-weight:600;">${r.salary || "—"}</td>
+      <td style="padding:10px 12px;color:#334155;font-size:11px;">${r.postedDaysAgo === 0 ? "Today" : r.postedDaysAgo === 1 ? "1d ago" : r.postedDaysAgo != null ? r.postedDaysAgo + "d ago" : "—"}</td>
+      <td style="padding:10px 12px;">
+        ${r.applylink ? `<a href="${r.applylink}" style="background:rgba(29,78,216,0.25);border:1px solid #1d4ed8;color:#93c5fd;padding:4px 10px;border-radius:6px;font-size:10px;text-decoration:none;font-weight:700;">Apply ↗</a>` : "—"}
+      </td>
+    </tr>`).join("");
+
+  const topMatchRows = byScore.slice(0, 5).filter(r => r.matchScore > 0).map(r => `
+    <tr>
+      <td style="padding:8px 12px;color:#86efac;font-weight:600;">${r.title}</td>
+      <td style="padding:8px 12px;color:#64748b;">${r.company}</td>
+      <td style="padding:8px 12px;color:#22c55e;font-weight:800;">${r.matchScore}%</td>
+    </tr>`).join("");
+
+  return `<!DOCTYPE html>
+<html><head><meta charset="UTF-8"></head>
+<body style="margin:0;padding:0;background:#0a0f1a;font-family:'Segoe UI',Arial,sans-serif;">
+<table width="100%" cellpadding="0" cellspacing="0" style="background:#0a0f1a;padding:30px 0;">
+<tr><td align="center">
+<table width="680" cellpadding="0" cellspacing="0" style="max-width:680px;width:100%;">
+  <tr><td style="background:linear-gradient(135deg,#0f172a 0%,#1e1b4b 50%,#0c2236 100%);border-radius:16px 16px 0 0;padding:32px;text-align:center;border:1px solid #1e2d45;border-bottom:none;">
+    <div style="font-size:28px;margin-bottom:6px;">🔍</div>
+    <h1 style="margin:0;font-size:24px;font-weight:800;color:#67e8f9;">Daily Job Digest</h1>
+    <p style="color:#475569;font-size:13px;margin:8px 0 0;">JobBoard Pro${profileName ? " · " + profileName : ""} · ${searchDate}</p>
+    <p style="color:#334155;font-size:12px;margin:6px 0 0;">Keywords: <strong style="color:#a5b4fc;">${keywords || "Your profile skills"}</strong></p>
+  </td></tr>
+
+  <tr><td style="background:#07101f;border:1px solid #1e2d45;border-top:none;border-bottom:none;padding:20px 24px;">
+    <table width="100%" cellpadding="0" cellspacing="0" style="background:#0a1628;border-radius:12px;border:1px solid #1e2d45;">
+      <tr>
+        <td style="text-align:center;padding:16px 8px;border-right:1px solid #1e2d45;">
+          <div style="font-size:28px;font-weight:800;color:#67e8f9;font-family:monospace;">${results.length}</div>
+          <div style="font-size:10px;color:#475569;text-transform:uppercase;margin-top:3px;">Jobs Found</div>
+        </td>
+        <td style="text-align:center;padding:16px 8px;border-right:1px solid #1e2d45;">
+          <div style="font-size:28px;font-weight:800;color:#86efac;font-family:monospace;">${byScore.filter(r => r.matchScore > 0).length}</div>
+          <div style="font-size:10px;color:#475569;text-transform:uppercase;margin-top:3px;">Profile Matches</div>
+        </td>
+        <td style="text-align:center;padding:16px 8px;border-right:1px solid #1e2d45;">
+          <div style="font-size:28px;font-weight:800;color:#fde047;font-family:monospace;">${results.filter(r => (r.postedDaysAgo || 99) <= 1).length}</div>
+          <div style="font-size:10px;color:#475569;text-transform:uppercase;margin-top:3px;">Posted Today</div>
+        </td>
+        <td style="text-align:center;padding:16px 8px;">
+          <div style="font-size:28px;font-weight:800;color:#a78bfa;font-family:monospace;">${byScore[0]?.matchScore || 0}%</div>
+          <div style="font-size:10px;color:#475569;text-transform:uppercase;margin-top:3px;">Best Match</div>
+        </td>
+      </tr>
+    </table>
+  </td></tr>
+
+  ${topMatchRows ? `<tr><td style="background:#07101f;border:1px solid #1e2d45;border-top:none;border-bottom:none;padding:0 24px 20px;">
+    <div style="background:rgba(34,197,94,0.07);border:1px solid rgba(34,197,94,0.2);border-radius:12px;padding:16px;">
+      <p style="color:#86efac;font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;margin:0 0 12px;">⚡ Top Matches for Your Profile</p>
+      <table width="100%" cellpadding="0" cellspacing="0">
+        <tr><th style="text-align:left;color:#475569;font-size:10px;padding:6px 12px;">Role</th><th style="text-align:left;color:#475569;font-size:10px;padding:6px 12px;">Company</th><th style="text-align:left;color:#475569;font-size:10px;padding:6px 12px;">Match</th></tr>
+        ${topMatchRows}
+      </table>
+    </div>
+  </td></tr>` : ""}
+
+  <tr><td style="background:#07101f;border:1px solid #1e2d45;border-top:none;border-bottom:none;padding:0 24px 20px;">
+    <p style="color:#67e8f9;font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;margin:0 0 12px;">📋 All Jobs (Full list in Excel attachment)</p>
+    <table width="100%" cellpadding="0" cellspacing="0" style="background:#0a1628;border-radius:12px;border:1px solid #0891b2;overflow:hidden;">
+      <tr style="background:#0c2236;">
+        <th style="text-align:left;color:#67e8f9;font-size:10px;padding:10px 12px;">Role</th>
+        <th style="text-align:left;color:#67e8f9;font-size:10px;padding:10px 12px;">Company</th>
+        <th style="text-align:left;color:#67e8f9;font-size:10px;padding:10px 12px;">Location</th>
+        <th style="text-align:left;color:#67e8f9;font-size:10px;padding:10px 12px;">Salary</th>
+        <th style="text-align:left;color:#67e8f9;font-size:10px;padding:10px 12px;">Posted</th>
+        <th style="text-align:left;color:#67e8f9;font-size:10px;padding:10px 12px;">Apply</th>
+      </tr>
+      ${jobRows}
+    </table>
+    ${results.length > 20 ? `<p style="color:#334155;font-size:11px;margin:10px 0 0;text-align:center;">+ ${results.length - 20} more jobs in the Excel attachment</p>` : ""}
+  </td></tr>
+
+  <tr><td style="background:#060d1b;border:1px solid #1e2d45;border-top:none;border-radius:0 0 16px 16px;padding:20px 24px;text-align:center;">
+    <p style="color:#1e2d45;font-size:11px;margin:0;">JobBoard Pro Daily Job Digest · ${searchDate}</p>
+    <p style="color:#1e2d45;font-size:10px;margin:5px 0 0;">Full results in attached Excel. Open JobBoard Pro to save jobs to your tracker.</p>
+  </td></tr>
+</table>
+</td></tr>
+</table>
+</body>
+</html>`;
+}
+
+// ── Job Digest Excel ───────────────────────────────────────────────────────────
+function generateJobDigestExcel(results, searchDate, keywords) {
+  const wb = XLSX.utils.book_new();
+
+  // Sheet 1: All results sorted by match score
+  const sorted = [...results].sort((a, b) => (b.matchScore || 0) - (a.matchScore || 0));
+  const headers = ["#", "Job Title", "Company", "Location", "Type", "Salary", "Match %", "Skills Required", "Source", "Posted", "Apply Link", "Description"];
+  const rows = sorted.map((r, i) => [
+    i + 1, r.title, r.company, r.location || "", r.type || "Full-time",
+    r.salary || "Not disclosed", r.matchScore ? r.matchScore + "%" : "—",
+    r.skills || "", r.source || "Adzuna",
+    r.postedDaysAgo === 0 ? "Today" : r.postedDaysAgo === 1 ? "Yesterday" : r.postedDaysAgo != null ? r.postedDaysAgo + "d ago" : "—",
+    r.applylink || "", r.description || "",
+  ]);
+  const ws1 = XLSX.utils.aoa_to_sheet([headers, ...rows]);
+  ws1["!cols"] = [{ wch: 4 }, { wch: 35 }, { wch: 22 }, { wch: 18 }, { wch: 12 }, { wch: 16 }, { wch: 9 }, { wch: 30 }, { wch: 10 }, { wch: 10 }, { wch: 40 }, { wch: 60 }];
+  XLSX.utils.book_append_sheet(wb, ws1, "📋 All Jobs");
+
+  // Sheet 2: Top matches only (>50%)
+  const topMatches = sorted.filter(r => r.matchScore >= 50);
+  if (topMatches.length) {
+    const rows2 = topMatches.map((r, i) => [i + 1, r.title, r.company, r.location || "", r.salary || "—", r.matchScore + "%", r.skills || "", r.applylink || ""]);
+    const ws2 = XLSX.utils.aoa_to_sheet([["#", "Role", "Company", "Location", "Salary", "Match", "Skills", "Apply Link"], ...rows2]);
+    ws2["!cols"] = [{ wch: 4 }, { wch: 35 }, { wch: 22 }, { wch: 18 }, { wch: 16 }, { wch: 9 }, { wch: 30 }, { wch: 40 }];
+    XLSX.utils.book_append_sheet(wb, ws2, "⚡ Top Matches");
+  }
+
+  // Sheet 3: Fresh jobs (posted today/yesterday)
+  const fresh = sorted.filter(r => (r.postedDaysAgo || 99) <= 1);
+  if (fresh.length) {
+    const rows3 = fresh.map((r, i) => [i + 1, r.title, r.company, r.location || "", r.salary || "—", r.matchScore ? r.matchScore + "%" : "—", r.applylink || ""]);
+    const ws3 = XLSX.utils.aoa_to_sheet([["#", "Role", "Company", "Location", "Salary", "Match", "Apply Link"], ...rows3]);
+    ws3["!cols"] = [{ wch: 4 }, { wch: 35 }, { wch: 22 }, { wch: 18 }, { wch: 16 }, { wch: 9 }, { wch: 40 }];
+    XLSX.utils.book_append_sheet(wb, ws3, "🆕 Posted Today");
+  }
+
+  // Sheet 4: Summary
+  const byType = results.reduce((a, r) => { a[r.type || "Unknown"] = (a[r.type || "Unknown"] || 0) + 1; return a; }, {});
+  const byLoc = Object.entries(results.reduce((a, r) => { if (r.location) { const l = r.location.split(",")[0].trim(); a[l] = (a[l] || 0) + 1; } return a; }, {})).sort((a, b) => b[1] - a[1]).slice(0, 10);
+  const sumData = [
+    ["📊 Job Search Summary", ""],
+    ["Search Date", searchDate],
+    ["Keywords", keywords || "(from profile)"],
+    ["Total Results", results.length],
+    ["Profile Matches (>0%)", sorted.filter(r => r.matchScore > 0).length],
+    ["High Matches (>50%)", sorted.filter(r => r.matchScore >= 50).length],
+    ["Posted Today", results.filter(r => (r.postedDaysAgo || 99) <= 1).length],
+    ["With Salary Info", results.filter(r => r.salary).length],
+    ["", ""],
+    ["📍 Top Locations", "Count"],
+    ...byLoc.map(([l, c]) => [l, c]),
+    ["", ""],
+    ["💼 By Job Type", "Count"],
+    ...Object.entries(byType).sort((a, b) => b[1] - a[1]).map(([t, c]) => [t, c]),
+  ];
+  const ws4 = XLSX.utils.aoa_to_sheet(sumData);
+  ws4["!cols"] = [{ wch: 28 }, { wch: 16 }];
+  XLSX.utils.book_append_sheet(wb, ws4, "📊 Summary");
+
+  const date = searchDate.replace(/[^a-zA-Z0-9]/g, "-");
+  return { wb, filename: `JobDigest_${date}.xlsx` };
+}
+
+// ── Generate Job Digest PDF ────────────────────────────────────────────────────
+async function generateJobDigestPDF(results, searchDate, profileName, keywords) {
+  const JsPDF = await loadJsPDF();
+  const doc = new JsPDF({ orientation: "landscape", unit: "mm", format: "a4" });
+  const pw = doc.internal.pageSize.getWidth();
+
+  // Header
+  doc.setFillColor(7, 16, 31);
+  doc.rect(0, 0, pw, 36, "F");
+  doc.setFillColor(6, 182, 212);
+  doc.rect(0, 34, pw, 2, "F");
+  doc.setTextColor(103, 232, 249); doc.setFontSize(20); doc.setFont("helvetica", "bold");
+  doc.text("🔍 Daily Job Digest", 14, 16);
+  doc.setFontSize(8); doc.setFont("helvetica", "normal"); doc.setTextColor(148, 163, 184);
+  doc.text(`${searchDate}${profileName ? " · " + profileName : ""}  ·  Keywords: ${keywords || "profile skills"}  ·  ${results.length} jobs found`, 14, 27);
+
+  const sorted = [...results].sort((a, b) => (b.matchScore || 0) - (a.matchScore || 0));
+
+  // Stats row
+  const statBoxes = [
+    ["Total Jobs", results.length, [103, 232, 249]],
+    ["Profile Matches", sorted.filter(r => r.matchScore > 0).length, [134, 239, 172]],
+    ["High Match (50%+)", sorted.filter(r => r.matchScore >= 50).length, [34, 197, 94]],
+    ["Posted Today", results.filter(r => (r.postedDaysAgo || 99) <= 1).length, [253, 224, 71]],
+    ["Best Match", (sorted[0]?.matchScore || 0) + "%", [192, 132, 252]],
+  ];
+  const bw = (pw - 28) / statBoxes.length;
+  statBoxes.forEach(([label, val, rgb], i) => {
+    const bx = 14 + i * bw;
+    doc.setFillColor(6, 16, 30); doc.roundedRect(bx, 42, bw - 3, 20, 2, 2, "F");
+    doc.setTextColor(...rgb); doc.setFontSize(14); doc.setFont("helvetica", "bold");
+    doc.text(String(val), bx + (bw - 3) / 2, 54, { align: "center" });
+    doc.setTextColor(71, 85, 105); doc.setFontSize(6.5); doc.setFont("helvetica", "normal");
+    doc.text(label.toUpperCase(), bx + (bw - 3) / 2, 60, { align: "center" });
+  });
+
+  // Main table
+  doc.autoTable({
+    startY: 68,
+    head: [["#", "Role", "Company", "Location", "Salary", "Match", "Type", "Posted", "Skills"]],
+    body: sorted.slice(0, 50).map((r, i) => [
+      i + 1, r.title?.slice(0, 38) || (r.title || ""), r.company?.slice(0, 20) || "", r.location?.slice(0, 18) || "—",
+      r.salary || "—", r.matchScore ? (r.matchScore + "%") : "—", r.type || "Full-time",
+      r.postedDaysAgo === 0 ? "Today" : r.postedDaysAgo === 1 ? "1d ago" : r.postedDaysAgo != null ? r.postedDaysAgo + "d ago" : "—",
+      (r.skills || "").slice(0, 30),
+    ]),
+    theme: "plain",
+    styles: { fontSize: 7.5, textColor: [148, 163, 184], fillColor: [6, 16, 30], cellPadding: 2.5, overflow: "ellipsize" },
+    headStyles: { fillColor: [12, 34, 54], textColor: [103, 232, 249], fontStyle: "bold", fontSize: 7 },
+    alternateRowStyles: { fillColor: [10, 22, 40] },
+    columnStyles: {
+      0: { cellWidth: 8 }, 1: { cellWidth: 52 }, 2: { cellWidth: 32 }, 3: { cellWidth: 28 },
+      4: { cellWidth: 22, textColor: [167, 139, 250], fontStyle: "bold" }, 5: { cellWidth: 14, textColor: [134, 239, 172], fontStyle: "bold" },
+      6: { cellWidth: 20 }, 7: { cellWidth: 14 }, 8: { cellWidth: 40 },
+    },
+    margin: { left: 14, right: 14 },
+    didParseCell: (data) => {
+      if (data.column.index === 5 && data.section === "body") {
+        const val = parseInt(data.cell.text[0]);
+        if (val >= 75) data.cell.styles.textColor = [34, 197, 94];
+        else if (val >= 50) data.cell.styles.textColor = [245, 158, 11];
+        else if (val > 0) data.cell.styles.textColor = [96, 165, 250];
+      }
+    },
+  });
+
+  const totalPages = doc.internal.getNumberOfPages();
+  for (let i = 1; i <= totalPages; i++) {
+    doc.setPage(i);
+    doc.setFillColor(6, 13, 26); doc.rect(0, 198, pw, 10, "F");
+    doc.setTextColor(71, 85, 105); doc.setFontSize(6.5);
+    doc.text(`JobBoard Pro Daily Job Digest  ·  ${searchDate}  ·  Page ${i}/${totalPages}`, pw / 2, 204, { align: "center" });
+  }
+  return doc;
+}
+
 // ── Email Report HTML Template ────────────────────────────────────────────────
 function buildReportHTML(jobs, reportDate, profileName) {
   const stats = STATUS.reduce((a, s) => { a[s] = jobs.filter(j => j.status === s).length; return a; }, {});
@@ -557,6 +941,18 @@ export default function Dashboard({ session }) {
   // ── Report ──
   const [reportSending, setReportSending] = useState(false);
   const [reportLog, setReportLog] = useState(() => { try { return JSON.parse(localStorage.getItem("reportLog") || "[]"); } catch { return []; } });
+
+  // ── Daily Job Search state ──
+  const [autoJobSearch, setAutoJobSearch] = useState(() => localStorage.getItem("autoJobSearch") === "true");
+  const [jobSearchTime, setJobSearchTime] = useState(() => localStorage.getItem("jobSearchTime") || "08:00");
+  const [jobSearchKeywords, setJobSearchKeywords] = useState(() => localStorage.getItem("jobSearchKeywords") || "");
+  const [jobSearchLocation, setJobSearchLocation] = useState(() => localStorage.getItem("jobSearchLocation") || "");
+  const [jobSearchResultCount, setJobSearchResultCount] = useState(() => localStorage.getItem("jobSearchResultCount") || "50");
+  const [jobSearchFormat, setJobSearchFormat] = useState(() => localStorage.getItem("jobSearchFormat") || "both");
+  const [reportFormat, setReportFormat] = useState(() => localStorage.getItem("reportFormat") || "both");
+  const [jobDigestLog, setJobDigestLog] = useState(() => { try { return JSON.parse(localStorage.getItem("jobDigestLog") || "[]"); } catch { return []; } });
+  const [digestSending, setDigestSending] = useState(false);
+  const [lastDigestResults, setLastDigestResults] = useState([]);
   const [showReportPreview, setShowReportPreview] = useState(false);
   const [reportPreviewHTML, setReportPreviewHTML] = useState("");
 
@@ -624,6 +1020,148 @@ export default function Dashboard({ session }) {
     const interval = setInterval(check, 60000);
     return () => clearInterval(interval);
   }, [autoReport, reportEmail, reportTime, jobs.length]);
+
+  // ── Auto daily job search ─────────────────────────────────────────────────
+  useEffect(() => {
+    if (!autoJobSearch || !reportEmail) return;
+    const check = () => {
+      const lastSent = localStorage.getItem("lastDigestDate");
+      if (lastSent === todayStr()) return;
+      const [h, m] = jobSearchTime.split(":").map(Number);
+      const now = new Date();
+      if (now.getHours() > h || (now.getHours() === h && now.getMinutes() >= m)) {
+        handleSendJobDigest(true);
+      }
+    };
+    check();
+    const interval = setInterval(check, 60000);
+    return () => clearInterval(interval);
+  }, [autoJobSearch, reportEmail, jobSearchTime, jobSearchKeywords, jobSearchLocation]);
+
+  // ── Send Job Digest ────────────────────────────────────────────────────
+  async function fetchJobsForDigest() {
+    const keywords = jobSearchKeywords || profile.target_roles || profile.skills?.split(",").slice(0, 3).join(" ") || "";
+    const location = jobSearchLocation || profile.target_locations || profile.location || "";
+    const count = parseInt(jobSearchResultCount) || 50;
+    const pages = Math.ceil(count / 50);
+
+    let all = [];
+    for (let p = 1; p <= pages; p++) {
+      let url = `https://api.adzuna.com/v1/api/jobs/in/search/${p}?app_id=${adzunaId}&app_key=${adzunaKey}&results_per_page=50&content-type=application/json`;
+      if (keywords.trim()) url += `&what=${encodeURIComponent(keywords.trim())}`;
+      if (location.trim()) url += `&where=${encodeURIComponent(location.trim())}`;
+      try {
+        const res = await fetch(url);
+        if (!res.ok) break;
+        const data = await res.json();
+        if (!data.results?.length) break;
+        const mapped = data.results.map(j => {
+          const rawDesc = (j.description || "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+          return {
+            title: j.title?.replace(/<[^>]+>/g, "") || "",
+            company: j.company?.display_name || "Unknown",
+            location: j.location?.display_name || "",
+            type: (j.contract_time || "") === "part_time" ? "Part-time" : (j.contract_type || "") === "contract" ? "Contract" : "Full-time",
+            salary: formatSalary(j.salary_min, j.salary_max),
+            skills: extractSkillsFromText(rawDesc),
+            applylink: j.redirect_url || "",
+            description: rawDesc.slice(0, 200),
+            category: j.category?.label || "",
+            postedDaysAgo: j.created ? Math.floor((Date.now() - new Date(j.created).getTime()) / 86400000) : null,
+            matchScore: calcMatchScore(extractSkillsFromText(rawDesc), profile.skills || ""),
+          };
+        });
+        all = all.concat(mapped);
+      } catch { break; }
+    }
+    return all;
+  }
+
+  async function handleSendJobDigest(isAuto = false) {
+    if (!reportEmail) return notify("Set report email in Reports tab", "err");
+    if (!adzunaId || !adzunaKey) return notify("Add Adzuna credentials in ⚙️ Settings", "err");
+    setDigestSending(true);
+    const searchDate = new Date().toLocaleDateString("en-IN", { weekday: "long", day: "numeric", month: "long", year: "numeric" });
+    const keywords = jobSearchKeywords || profile.target_roles || profile.skills?.split(",").slice(0, 3).join(" ") || "jobs";
+    try {
+      notify("Searching jobs for digest…");
+      const results = await fetchJobsForDigest();
+      if (!results.length) { notify("No jobs found for digest — check keywords/credentials", "err"); setDigestSending(false); return; }
+      setLastDigestResults(results);
+
+      const token = await getGoogleToken(
+        "https://www.googleapis.com/auth/gmail.send https://www.googleapis.com/auth/drive.file",
+        session, clientId
+      );
+
+      const htmlBody = buildJobDigestHTML(results, searchDate, profile.full_name || session.user.email, keywords);
+      const subject = `🔍 Daily Job Digest — ${results.length} jobs · ${searchDate}`;
+
+      // Excel
+      const { wb, filename } = generateJobDigestExcel(results, searchDate, keywords);
+      const xlsxBuf = XLSX.write(wb, { bookType: "xlsx", type: "array" });
+
+      if (jobSearchFormat === "pdf" || jobSearchFormat === "both") {
+        // Send email with HTML body (PDF too large to attach via raw, save to Drive instead)
+        await sendEmailViaGmail(reportEmail, subject, htmlBody, token);
+        const pdfDoc = await generateJobDigestPDF(results, searchDate, profile.full_name || "", keywords);
+        const pdfBuf = pdfDoc.output("arraybuffer");
+        const pdfFilename = filename.replace(".xlsx", ".pdf");
+        await saveFileToDrive(pdfFilename, pdfBuf, "application/pdf", token);
+      } else {
+        await sendEmailViaGmail(reportEmail, subject, htmlBody, token);
+      }
+
+      if (jobSearchFormat === "excel" || jobSearchFormat === "both") {
+        await saveFileToDrive(filename, xlsxBuf, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", token);
+      }
+
+      const entry = { date: todayStr(), time: new Date().toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" }), count: results.length, keywords, isAuto };
+      const newLog = [entry, ...jobDigestLog].slice(0, 30);
+      setJobDigestLog(newLog);
+      localStorage.setItem("jobDigestLog", JSON.stringify(newLog));
+      localStorage.setItem("lastDigestDate", todayStr());
+      notify(`Job digest sent! ${results.length} jobs → Gmail + Drive ✓`);
+    } catch (err) { notify("Digest failed: " + err.message, "err"); }
+    setDigestSending(false);
+  }
+
+  async function handleSendReport(isAuto = false) {
+    // Also send progress report in PDF format if selected
+    if (!reportEmail) return notify("Set report email in Reports tab", "err");
+    setReportSending(true);
+    const reportDate = new Date().toLocaleDateString("en-IN", { weekday: "long", day: "numeric", month: "long", year: "numeric" });
+    try {
+      const token = await getGoogleToken(
+        "https://www.googleapis.com/auth/gmail.send https://www.googleapis.com/auth/drive.file",
+        session, clientId
+      );
+      const htmlBody = buildReportHTML(jobs, reportDate, profile.full_name || session.user.email);
+      const subject = `📊 JobBoard Pro Daily Report — ${reportDate}`;
+
+      await sendEmailViaGmail(reportEmail, subject, htmlBody, token);
+
+      if (reportFormat === "excel" || reportFormat === "both") {
+        const { wb, filename } = generateBeautifulExcel(jobs);
+        const xlsxBuf = XLSX.write(wb, { bookType: "xlsx", type: "array" });
+        await saveFileToDrive(filename, xlsxBuf, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", token);
+      }
+      if (reportFormat === "pdf" || reportFormat === "both") {
+        const pdfDoc = await generateProgressPDF(jobs, reportDate, profile.full_name || session.user.email);
+        const pdfBuf = pdfDoc.output("arraybuffer");
+        const date = new Date().toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" }).replace(/ /g, "-");
+        await saveFileToDrive(`JobBoard_Report_${date}.pdf`, pdfBuf, "application/pdf", token);
+      }
+
+      const entry = { date: todayStr(), time: new Date().toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" }), jobs: jobs.length, isAuto };
+      const newLog = [entry, ...reportLog].slice(0, 30);
+      setReportLog(newLog);
+      localStorage.setItem("reportLog", JSON.stringify(newLog));
+      localStorage.setItem("lastReportDate", todayStr());
+      notify(`${isAuto ? "Auto-" : ""}Report sent & saved to Drive ✓`);
+    } catch (err) { notify("Report failed: " + err.message, "err"); }
+    setReportSending(false);
+  }
 
   // ── Profile CRUD ──────────────────────────────────────────────────────
   // FIX: use maybeSingle() — .single() throws when no profile row exists yet
@@ -793,32 +1331,7 @@ ${resumeText.slice(0, 8000)}`,
     if (!error) { fetchJobs(); notify(`Duplicated "${job.title}" ✓`); } else notify(error.message, "err");
   }
 
-  // ── Reports ───────────────────────────────────────────────────────────
-  async function handleSendReport(isAuto = false) {
-    if (!reportEmail) return notify("Set report email in Reports tab", "err");
-    setReportSending(true);
-    const reportDate = new Date().toLocaleDateString("en-IN", { weekday: "long", day: "numeric", month: "long", year: "numeric" });
-    try {
-      const token = await getGoogleToken(
-        "https://www.googleapis.com/auth/gmail.send https://www.googleapis.com/auth/drive.file",
-        session, clientId
-      );
-      const htmlBody = buildReportHTML(jobs, reportDate, profile.full_name || session.user.email);
-      const { wb, filename } = generateBeautifulExcel(jobs);
-      const xlsxBuf = XLSX.write(wb, { bookType: "xlsx", type: "array" });
-
-      await sendEmailViaGmail(reportEmail, `📊 JobBoard Pro Daily Report — ${reportDate}`, htmlBody, token);
-      await saveFileToDrive(filename, xlsxBuf, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", token);
-
-      const entry = { date: todayStr(), time: new Date().toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" }), jobs: jobs.length, isAuto };
-      const newLog = [entry, ...reportLog].slice(0, 30);
-      setReportLog(newLog);
-      localStorage.setItem("reportLog", JSON.stringify(newLog));
-      localStorage.setItem("lastReportDate", todayStr());
-      notify(`${isAuto ? "Auto-" : ""}Report sent & saved to Drive ✓`);
-    } catch (err) { notify("Report failed: " + err.message, "err"); }
-    setReportSending(false);
-  }
+  // ── Reports ─── (moved above, see handleSendReport + handleSendJobDigest) ───
 
   function previewReport() {
     const reportDate = new Date().toLocaleDateString("en-IN", { weekday: "long", day: "numeric", month: "long", year: "numeric" });
@@ -842,6 +1355,13 @@ ${resumeText.slice(0, 8000)}`,
     localStorage.setItem("reportEmail", reportEmail);
     localStorage.setItem("autoReport", String(autoReport));
     localStorage.setItem("reportTime", reportTime);
+    localStorage.setItem("autoJobSearch", String(autoJobSearch));
+    localStorage.setItem("jobSearchTime", jobSearchTime);
+    localStorage.setItem("jobSearchKeywords", jobSearchKeywords);
+    localStorage.setItem("jobSearchLocation", jobSearchLocation);
+    localStorage.setItem("jobSearchResultCount", jobSearchResultCount);
+    localStorage.setItem("jobSearchFormat", jobSearchFormat);
+    localStorage.setItem("reportFormat", reportFormat);
     // Clear ALL cached Google tokens so new clientId / scopes take effect
     try { Object.keys(sessionStorage).filter(k => k.startsWith("gtoken_")).forEach(k => sessionStorage.removeItem(k)); } catch { }
     notify("Settings saved ✓");
@@ -1596,63 +2116,142 @@ After uploading/pasting, click Parse Resume to auto-fill your profile." rows={7}
         {tab === "reports" && <div>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 20, flexWrap: "wrap", gap: 12 }}>
             <div>
-              <h2 style={{ fontFamily: "'Syne',sans-serif", fontSize: 18, fontWeight: 800, color: "#f1f5f9", margin: 0 }}>📨 Daily Reports</h2>
-              <p style={{ color: "#475569", fontSize: 12, marginTop: 4 }}>Sends a styled HTML email + Excel to your inbox and saves to Google Drive → <strong>JobBoard Pro</strong> folder.</p>
+              <h2 style={{ fontFamily: "'Syne',sans-serif", fontSize: 18, fontWeight: 800, color: "#f1f5f9", margin: 0 }}>📨 Automated Daily Reports</h2>
+              <p style={{ color: "#475569", fontSize: 12, marginTop: 4 }}>Progress report + job search digest sent to Gmail daily. Files saved to Google Drive → <strong>JobBoard Pro</strong> folder.</p>
             </div>
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
               <Btn v="ghost" onClick={previewReport}>👁 Preview</Btn>
-              <Btn v="grn" onClick={downloadReport}>📥 Download Excel</Btn>
-              <Btn v="vio" onClick={() => handleSendReport()} disabled={reportSending}>{reportSending ? <><span style={{ animation: "spin 0.8s linear infinite", display: "inline-block" }}>◌</span> Sending…</> : "📧 Send Report Now"}</Btn>
+              <Btn v="grn" onClick={downloadReport}>📥 Excel</Btn>
+              <Btn v="vio" onClick={() => handleSendReport()} disabled={reportSending}>{reportSending ? <><span style={{ animation: "spin 0.8s linear infinite", display: "inline-block" }}>◌</span> Sending…</> : "📊 Send Progress Now"}</Btn>
+              <Btn v="cyn" onClick={() => handleSendJobDigest()} disabled={digestSending}>{digestSending ? <><span style={{ animation: "spin 0.8s linear infinite", display: "inline-block" }}>◌</span> Fetching jobs…</> : "🔍 Send Job Digest Now"}</Btn>
             </div>
           </div>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginBottom: 20 }}>
-            <div style={{ background: "#06101e", border: "1px solid #1e2d45", borderRadius: 16, padding: 22 }}>
-              <div style={{ color: "#60a5fa", fontSize: 11, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 16 }}>⚙️ Configuration</div>
-              <F label="Send To Email"><Inp value={reportEmail} onChange={e => setReportEmail(e.target.value)} placeholder="your@email.com" type="email" /></F>
-              <F label="Daily Send Time"><Inp value={reportTime} onChange={e => setReportTime(e.target.value)} type="time" /></F>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", background: "#070f1c", border: "1px solid #1e2d45", borderRadius: 10, padding: "14px 16px", marginBottom: 14 }}>
-                <div><div style={{ color: "#e2e8f0", fontWeight: 600, fontSize: 13 }}>Auto Daily Report</div><div style={{ color: "#475569", fontSize: 11, marginTop: 2 }}>Checked every minute</div></div>
-                <button onClick={() => setAutoReport(v => { localStorage.setItem("autoReport", String(!v)); return !v; })} style={{ width: 44, height: 24, borderRadius: 999, border: "none", cursor: "pointer", transition: "all .2s", background: autoReport ? "#4f46e5" : "#1e2d45", position: "relative" }}>
-                  <span style={{ position: "absolute", top: 3, width: 18, height: 18, borderRadius: "50%", background: "#fff", transition: "all .2s", left: autoReport ? "23px" : "3px" }} />
-                </button>
-              </div>
-              <Btn v="pri" onClick={saveSettings} sx={{ width: "100%", justifyContent: "center", padding: "11px" }}>Save Settings</Btn>
-              <div style={{ marginTop: 14, background: "rgba(99,102,241,0.05)", border: "1px solid rgba(99,102,241,0.15)", borderRadius: 10, padding: "12px 14px", fontSize: 11, color: "#a5b4fc", lineHeight: 1.7 }}>
-                🔐 <strong>First-time permission flow:</strong><br />
-                When you click "Send Report Now", a Google popup asks for <strong>Gmail send + Drive access</strong>. After you approve once, it's cached for the session — no more popups. Each permission is scoped to exactly what's needed.
-              </div>
-              <div style={{ marginTop: 10, background: "rgba(6,182,212,0.05)", border: "1px solid rgba(6,182,212,0.12)", borderRadius: 10, padding: "12px 14px", fontSize: 11, color: "#06b6d4", lineHeight: 1.7 }}>
-                <strong>📋 What's included:</strong><br />Summary stats · Interviews & offers · Deadlines this week · Recent applications · Career tips<br />+ Beautiful Excel (5 sheets) saved to <strong>Drive → JobBoard Pro</strong> folder
-              </div>
-            </div>
+
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginBottom: 16 }}>
+
             <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
               <div style={{ background: "#06101e", border: "1px solid #1e2d45", borderRadius: 16, padding: 22 }}>
-                <div style={{ color: "#86efac", fontSize: 11, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 14 }}>📊 Stats</div>
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-                  {[["Reports Sent", reportLog.length, "#60a5fa"], ["Applications", jobs.length, "#86efac"], ["Interviews", stats.Interview || 0, "#22c55e"], ["Offers", stats.Offer || 0, "#fde047"]].map(([l, v, c]) => (
-                    <div key={l} style={{ background: "#070f1c", border: "1px solid #1e2d45", borderRadius: 10, padding: "14px", textAlign: "center" }}>
-                      <div style={{ color: c, fontSize: 22, fontWeight: 800, fontFamily: "'JetBrains Mono',monospace" }}>{v}</div>
-                      <div style={{ color: "#334155", fontSize: 10, marginTop: 3 }}>{l}</div>
+                <div style={{ color: "#60a5fa", fontSize: 11, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 16, display: "flex", alignItems: "center", gap: 8 }}>
+                  📊 Progress Report
+                  {autoReport && <span style={{ background: "rgba(34,197,94,0.1)", border: "1px solid rgba(34,197,94,0.25)", color: "#86efac", padding: "1px 8px", borderRadius: 999, fontSize: 9, fontWeight: 700 }}>AUTO ON</span>}
+                </div>
+                <F label="Send To Email"><Inp value={reportEmail} onChange={e => setReportEmail(e.target.value)} placeholder="your@email.com" type="email" /></F>
+                <F label="Daily Send Time"><Inp value={reportTime} onChange={e => setReportTime(e.target.value)} type="time" /></F>
+                <F label="Export Format">
+                  <div style={{ display: "flex", gap: 8 }}>
+                    {[["both", "Excel + PDF"], ["excel", "Excel Only"], ["pdf", "PDF Only"]].map(([v, l]) => (
+                      <button key={v} onClick={() => setReportFormat(v)} style={{ flex: 1, padding: "8px 4px", borderRadius: 8, border: "1px solid " + (reportFormat === v ? "#4f46e5" : "#1e2d45"), background: reportFormat === v ? "rgba(79,70,229,0.15)" : "transparent", color: reportFormat === v ? "#a5b4fc" : "#475569", fontSize: 11, fontWeight: 600, cursor: "pointer", fontFamily: "inherit" }}>{l}</button>
+                    ))}
+                  </div>
+                </F>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", background: "#070f1c", border: "1px solid #1e2d45", borderRadius: 10, padding: "12px 16px", marginBottom: 12 }}>
+                  <div><div style={{ color: "#e2e8f0", fontWeight: 600, fontSize: 13 }}>Auto Send Daily</div><div style={{ color: "#475569", fontSize: 11, marginTop: 2 }}>At {reportTime} every day</div></div>
+                  <button onClick={() => setAutoReport(v => { localStorage.setItem("autoReport", String(!v)); return !v; })} style={{ width: 44, height: 24, borderRadius: 999, border: "none", cursor: "pointer", background: autoReport ? "#4f46e5" : "#1e2d45", position: "relative", transition: "background .2s" }}>
+                    <span style={{ position: "absolute", top: 3, width: 18, height: 18, borderRadius: "50%", background: "#fff", transition: "left .2s", left: autoReport ? "23px" : "3px" }} />
+                  </button>
+                </div>
+                <div style={{ background: "rgba(6,182,212,0.05)", border: "1px solid rgba(6,182,212,0.12)", borderRadius: 10, padding: "11px 14px", fontSize: 11, color: "#06b6d4", lineHeight: 1.7 }}>
+                  <strong>Includes:</strong> Status breakdown · Interviews · Deadlines · Recent apps · Priority stats<br />
+                  <strong>Drive:</strong> Excel (5 sheets) + PDF report
+                </div>
+              </div>
+              <div style={{ background: "#06101e", border: "1px solid #1e2d45", borderRadius: 16, padding: 22, flex: 1 }}>
+                <div style={{ color: "#a78bfa", fontSize: 11, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 12 }}>📋 Progress History</div>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 12 }}>
+                  {[["Sent", reportLog.length, "#60a5fa"], ["Jobs", jobs.length, "#86efac"], ["Interviews", stats.Interview || 0, "#22c55e"], ["Offers", stats.Offer || 0, "#fde047"]].map(([l, v, c]) => (
+                    <div key={l} style={{ background: "#070f1c", border: "1px solid #1e2d45", borderRadius: 10, padding: "10px", textAlign: "center" }}>
+                      <div style={{ color: c, fontSize: 18, fontWeight: 800, fontFamily: "'JetBrains Mono',monospace" }}>{v}</div>
+                      <div style={{ color: "#334155", fontSize: 9, marginTop: 2, textTransform: "uppercase" }}>{l}</div>
                     </div>
                   ))}
                 </div>
-                {reportLog.length > 0 && <div style={{ marginTop: 12, padding: "10px 14px", background: "#070f1c", borderRadius: 10, border: "1px solid #1e2d45", fontSize: 11, color: "#475569", display: "flex", justifyContent: "space-between" }}>
-                  <span>Last sent:</span><span style={{ color: "#86efac", fontWeight: 600 }}>{reportLog[0].date} at {reportLog[0].time}</span>
-                </div>}
-              </div>
-              <div style={{ background: "#06101e", border: "1px solid #1e2d45", borderRadius: 16, padding: 22, flex: 1 }}>
-                <div style={{ color: "#a78bfa", fontSize: 11, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 14 }}>📋 Report History</div>
-                {reportLog.length === 0 ? <div style={{ color: "#1e2d45", fontSize: 13, textAlign: "center", padding: "24px 0" }}>No reports sent yet</div> :
-                  <div style={{ display: "flex", flexDirection: "column", gap: 7, maxHeight: 240, overflowY: "auto" }}>
+                {reportLog.length === 0 ? <div style={{ color: "#1e2d45", fontSize: 12, textAlign: "center", padding: "16px 0" }}>No reports sent yet</div> :
+                  <div style={{ display: "flex", flexDirection: "column", gap: 6, maxHeight: 160, overflowY: "auto" }}>
                     {reportLog.map((r, i) => (
-                      <div key={i} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", background: "#070f1c", border: "1px solid #1e2d45", borderRadius: 8, padding: "10px 14px" }}>
-                        <div><div style={{ color: "#e2e8f0", fontSize: 12, fontWeight: 600 }}>{r.date}</div><div style={{ color: "#475569", fontSize: 10, marginTop: 2 }}>at {r.time} · {r.jobs} jobs{r.isAuto ? " · auto" : ""}</div></div>
-                        <span style={{ background: "rgba(34,197,94,0.1)", border: "1px solid rgba(34,197,94,0.2)", color: "#86efac", padding: "2px 8px", borderRadius: 999, fontSize: 10, fontWeight: 700 }}>✓ Sent</span>
+                      <div key={i} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", background: "#070f1c", border: "1px solid #1e2d45", borderRadius: 8, padding: "8px 12px" }}>
+                        <div><div style={{ color: "#e2e8f0", fontSize: 11, fontWeight: 600 }}>{r.date}</div><div style={{ color: "#475569", fontSize: 9, marginTop: 1 }}>{r.time} · {r.jobs} jobs{r.isAuto ? " · auto" : ""}</div></div>
+                        <span style={{ background: "rgba(34,197,94,0.1)", border: "1px solid rgba(34,197,94,0.2)", color: "#86efac", padding: "2px 7px", borderRadius: 999, fontSize: 9, fontWeight: 700 }}>✓</span>
                       </div>
                     ))}
                   </div>}
               </div>
             </div>
+
+            <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+              <div style={{ background: "#06101e", border: "1px solid #1e2d45", borderRadius: 16, padding: 22 }}>
+                <div style={{ color: "#67e8f9", fontSize: 11, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 16, display: "flex", alignItems: "center", gap: 8 }}>
+                  🔍 Daily Job Search Digest
+                  {autoJobSearch && <span style={{ background: "rgba(6,182,212,0.1)", border: "1px solid rgba(6,182,212,0.25)", color: "#06b6d4", padding: "1px 8px", borderRadius: 999, fontSize: 9, fontWeight: 700 }}>AUTO ON</span>}
+                </div>
+                <F label="Search Keywords" hint="blank = use profile target roles">
+                  <Inp value={jobSearchKeywords} onChange={e => setJobSearchKeywords(e.target.value)} placeholder={profile.target_roles || "React developer, Python analyst"} />
+                </F>
+                <F label="Location" hint="blank = use profile location">
+                  <Inp value={jobSearchLocation} onChange={e => setJobSearchLocation(e.target.value)} placeholder={profile.target_locations || profile.location || "Chennai, Bangalore, Remote"} />
+                </F>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                  <F label="Max Jobs">
+                    <select value={jobSearchResultCount} onChange={e => setJobSearchResultCount(e.target.value)} style={{ width: "100%", background: "#070f1c", border: "1px solid #1e2d45", borderRadius: 8, padding: "9px 12px", color: "#e2e8f0", fontSize: 13, outline: "none", fontFamily: "inherit" }}>
+                      {["25", "50", "100", "150", "200"].map(v => <option key={v} value={v}>{v} jobs</option>)}
+                    </select>
+                  </F>
+                  <F label="Export As">
+                    <select value={jobSearchFormat} onChange={e => setJobSearchFormat(e.target.value)} style={{ width: "100%", background: "#070f1c", border: "1px solid #1e2d45", borderRadius: 8, padding: "9px 12px", color: "#e2e8f0", fontSize: 13, outline: "none", fontFamily: "inherit" }}>
+                      <option value="both">Excel + PDF</option>
+                      <option value="excel">Excel Only</option>
+                      <option value="pdf">PDF Only</option>
+                    </select>
+                  </F>
+                </div>
+                <F label="Daily Send Time" hint={autoJobSearch ? "active" : "off"}>
+                  <Inp value={jobSearchTime} onChange={e => setJobSearchTime(e.target.value)} type="time" />
+                </F>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", background: "#070f1c", border: "1px solid #1e2d45", borderRadius: 10, padding: "12px 16px", marginBottom: 12 }}>
+                  <div><div style={{ color: "#e2e8f0", fontWeight: 600, fontSize: 13 }}>Auto Daily Job Digest</div><div style={{ color: "#475569", fontSize: 11, marginTop: 2 }}>Searches + emails at {jobSearchTime}</div></div>
+                  <button onClick={() => setAutoJobSearch(v => { localStorage.setItem("autoJobSearch", String(!v)); return !v; })} style={{ width: 44, height: 24, borderRadius: 999, border: "none", cursor: "pointer", background: autoJobSearch ? "#0e7490" : "#1e2d45", position: "relative", transition: "background .2s" }}>
+                    <span style={{ position: "absolute", top: 3, width: 18, height: 18, borderRadius: "50%", background: "#fff", transition: "left .2s", left: autoJobSearch ? "23px" : "3px" }} />
+                  </button>
+                </div>
+                <div style={{ background: "rgba(6,182,212,0.05)", border: "1px solid rgba(6,182,212,0.12)", borderRadius: 10, padding: "11px 14px", fontSize: 11, color: "#06b6d4", lineHeight: 1.7 }}>
+                  <strong>Email:</strong> Styled HTML with top matches highlighted · best match % · jobs posted today<br />
+                  <strong>Drive sheets:</strong> All Jobs · Top Matches (50%+) · Posted Today · Summary
+                </div>
+              </div>
+
+              <div style={{ background: "#06101e", border: "1px solid #1e2d45", borderRadius: 16, padding: 22, flex: 1 }}>
+                <div style={{ color: "#67e8f9", fontSize: 11, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 12 }}>📋 Job Digest History</div>
+                {lastDigestResults.length > 0 && (
+                  <div style={{ background: "#070f1c", border: "1px solid #1e2d45", borderRadius: 10, padding: "12px 14px", marginBottom: 12 }}>
+                    <div style={{ color: "#475569", fontSize: 10, marginBottom: 8 }}>LAST DIGEST</div>
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 6 }}>
+                      {[["Total", lastDigestResults.length, "#67e8f9"], ["Matches", lastDigestResults.filter(r => r.matchScore > 0).length, "#86efac"], ["Today", lastDigestResults.filter(r => (r.postedDaysAgo || 99) <= 1).length, "#fde047"]].map(([l, v, c]) => (
+                        <div key={l} style={{ textAlign: "center", background: "#06101e", borderRadius: 8, padding: "8px" }}>
+                          <div style={{ color: c, fontSize: 16, fontWeight: 800, fontFamily: "'JetBrains Mono',monospace" }}>{v}</div>
+                          <div style={{ color: "#334155", fontSize: 9, marginTop: 2, textTransform: "uppercase" }}>{l}</div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                {jobDigestLog.length === 0 ? <div style={{ color: "#1e2d45", fontSize: 12, textAlign: "center", padding: "16px 0" }}>No digests sent yet</div> :
+                  <div style={{ display: "flex", flexDirection: "column", gap: 6, maxHeight: 180, overflowY: "auto" }}>
+                    {jobDigestLog.map((r, i) => (
+                      <div key={i} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", background: "#070f1c", border: "1px solid #1e2d45", borderRadius: 8, padding: "8px 12px" }}>
+                        <div>
+                          <div style={{ color: "#e2e8f0", fontSize: 11, fontWeight: 600 }}>{r.date} · {r.count} jobs found</div>
+                          <div style={{ color: "#475569", fontSize: 9, marginTop: 1 }}>{r.time} · {(r.keywords || "").slice(0, 28)}{r.isAuto ? " · auto" : ""}</div>
+                        </div>
+                        <span style={{ background: "rgba(6,182,212,0.1)", border: "1px solid rgba(6,182,212,0.25)", color: "#06b6d4", padding: "2px 7px", borderRadius: 999, fontSize: 9, fontWeight: 700 }}>✓</span>
+                      </div>
+                    ))}
+                  </div>}
+              </div>
+            </div>
+          </div>
+
+          <div style={{ background: "rgba(99,102,241,0.05)", border: "1px solid rgba(99,102,241,0.15)", borderRadius: 12, padding: "12px 18px", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+            <span style={{ color: "#a5b4fc", fontSize: 12 }}>⚙️ Save keywords, times and format preferences</span>
+            <Btn v="pri" onClick={saveSettings}>💾 Save All Settings</Btn>
           </div>
         </div>}
 
