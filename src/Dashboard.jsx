@@ -518,9 +518,21 @@ export default function Dashboard({ session }) {
   const resumeRef = useRef();
   const dragId = useRef(null);
 
+  // FIX: Supabase caps at 1000 rows by default — paginate to fetch ALL rows
   const fetchJobs = useCallback(async () => {
-    const { data } = await supabase.from("jobs").select("*").order("created_at", { ascending: false });
-    if (data) setJobs(data);
+    const PAGE = 1000;
+    let all = [], from = 0, hasMore = true;
+    while (hasMore) {
+      const { data, error } = await supabase
+        .from("jobs").select("*")
+        .order("created_at", { ascending: false })
+        .range(from, from + PAGE - 1);
+      if (error || !data) break;
+      all = all.concat(data);
+      hasMore = data.length === PAGE;
+      from += PAGE;
+    }
+    setJobs(all);
   }, []);
 
   // ── Settings (persisted to localStorage) ──
@@ -581,11 +593,19 @@ export default function Dashboard({ session }) {
   const [gmailRows, setGmailRows] = useState([{ id: 1, date: "", company: "", jobTitle: "", status: "Applied", interviewDate: "", interviewTime: "", interviewType: "", notes: "" }]);
   const [gmailStats, setGmailStats] = useState(null);
 
+  // ── Multi-select (table bulk actions) ──
+  const [selected, setSelected] = useState(new Set());  // Set of job ids
+  const [bulkStatus, setBulkStatus] = useState("");
+  const [bulkPriority, setBulkPriority] = useState("");
+
   const notify = (m, t = "ok") => { setToast({ m, t }); setTimeout(() => setToast(null), 3500); };
   const AI = useCallback((prompt, sys = "") => callAI(prompt, sys, geminiKey, aiModel, proxyUrl), [geminiKey, aiModel, proxyUrl]);
 
   // ── Init ──────────────────────────────────────────────────────────────
   useEffect(() => { fetchJobs(); loadProfile(); }, [session]);
+
+  // Clear selection when tab or filters change so stale ids don't linger
+  useEffect(() => { setSelected(new Set()); }, [tab, filterStatus, filterType, filterPri, q]);
 
   // FIX: Auto daily report — use setInterval to check every minute instead of firing once
   useEffect(() => {
@@ -708,6 +728,68 @@ ${resumeText.slice(0, 8000)}`,
   async function setStatus(id, status) {
     await supabase.from("jobs").update({ status }).eq("id", id);
     fetchJobs();
+  }
+
+  // ── Bulk Operations ──────────────────────────────────────────────────
+  function toggleSelect(id) {
+    setSelected(s => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  }
+  function toggleSelectAll() {
+    setSelected(s => s.size === visible.length ? new Set() : new Set(visible.map(j => j.id)));
+  }
+  function clearSelection() { setSelected(new Set()); }
+
+  async function bulkDelete() {
+    if (!selected.size) return;
+    if (!confirm(`Delete ${selected.size} job${selected.size > 1 ? "s" : ""}? This cannot be undone.`)) return;
+    const ids = [...selected];
+    // Delete in batches of 200 to avoid URL length limits
+    for (let i = 0; i < ids.length; i += 200) {
+      const { error } = await supabase.from("jobs").delete().in("id", ids.slice(i, i + 200));
+      if (error) { notify(error.message, "err"); return; }
+    }
+    setSelected(new Set());
+    fetchJobs();
+    notify(`Deleted ${ids.length} job${ids.length > 1 ? "s" : ""} ✓`);
+  }
+
+  async function bulkSetStatus(status) {
+    if (!selected.size || !status) return;
+    const ids = [...selected];
+    for (let i = 0; i < ids.length; i += 200) {
+      await supabase.from("jobs").update({ status }).in("id", ids.slice(i, i + 200));
+    }
+    setSelected(new Set()); setBulkStatus("");
+    fetchJobs(); notify(`Updated ${ids.length} jobs → ${status} ✓`);
+  }
+
+  async function bulkSetPriority(priority) {
+    if (!selected.size || !priority) return;
+    const ids = [...selected];
+    for (let i = 0; i < ids.length; i += 200) {
+      await supabase.from("jobs").update({ priority }).in("id", ids.slice(i, i + 200));
+    }
+    setSelected(new Set()); setBulkPriority("");
+    fetchJobs(); notify(`Updated ${ids.length} jobs → ${priority} priority ✓`);
+  }
+
+  function bulkExport() {
+    if (!selected.size) return;
+    const sel = jobs.filter(j => selected.has(j.id));
+    const wb = XLSX.utils.book_new();
+    const headers = ["Job Title", "Company", "Location", "Type", "Salary", "Skills", "Source", "Status", "Priority", "Applied Date", "Deadline", "Apply Link", "Notes"];
+    const rows = sel.map(j => [j.title, j.company, j.location, j.type, j.salary, j.skills, j.source, j.status, j.priority, j.applieddate, j.deadline, j.applylink, j.notes]);
+    const ws = XLSX.utils.aoa_to_sheet([headers, ...rows]);
+    ws["!cols"] = headers.map(() => ({ wch: 20 }));
+    XLSX.utils.book_append_sheet(wb, ws, "Selected Jobs");
+    XLSX.writeFile(wb, `JobBoard_Selected_${sel.length}.xlsx`);
+    notify(`Exported ${sel.length} jobs ✓`);
+  }
+
+  async function duplicateJob(job) {
+    const payload = { title: `${job.title} (copy)`, company: job.company, location: job.location, type: job.type, salary: job.salary, skills: job.skills, source: job.source, applylink: job.applylink, status: "Bookmarked", applieddate: "", deadline: job.deadline, notes: job.notes, priority: job.priority, user_id: session.user.id };
+    const { error } = await supabase.from("jobs").insert([payload]);
+    if (!error) { fetchJobs(); notify(`Duplicated "${job.title}" ✓`); } else notify(error.message, "err");
   }
 
   // ── Reports ───────────────────────────────────────────────────────────
@@ -954,11 +1036,17 @@ Include: 6 technical Q&A (skills: ${job.skills || "general"}), 3 STAR behavioral
         mapped.forEach(r => { const isDup = jobs.some(j => j.title?.toLowerCase() === r.title?.toLowerCase() && j.company?.toLowerCase() === r.company?.toLowerCase()); if (isDup) skipped++; else newJobs.push(r); });
         if (!newJobs.length) { notify(`All ${skipped} jobs already exist`); return; }
         const doBatches = async () => {
-          for (let i = 0; i < newJobs.length; i += 500) {
-            const { error } = await supabase.from("jobs").insert(newJobs.slice(i, i + 500));
-            if (error) { notify(error.message, "err"); return; }
+          // Batch at 100 rows — safe for any Supabase plan, supports unlimited total rows
+          const BATCH = 100;
+          let inserted = 0, failed = 0;
+          for (let i = 0; i < newJobs.length; i += BATCH) {
+            const { error } = await supabase.from("jobs").insert(newJobs.slice(i, i + BATCH));
+            if (error) { failed += Math.min(BATCH, newJobs.length - i); }
+            else { inserted += Math.min(BATCH, newJobs.length - i); }
           }
-          fetchJobs(); notify(`Imported ${newJobs.length} jobs ✓${skipped > 0 ? ` (${skipped} skipped as duplicates)` : ""}`);
+          fetchJobs();
+          const msg = `Imported ${inserted} jobs ✓${failed > 0 ? ` (${failed} failed)` : ""}${skipped > 0 ? ` (${skipped} skipped as duplicates)` : ""}`;
+          notify(msg, failed > 0 ? "err" : "ok");
         };
         doBatches();
       } catch { notify("Import failed — check file format", "err"); }
@@ -1105,57 +1193,156 @@ Include: 6 technical Q&A (skills: ${job.skills || "general"}), 3 STAR behavioral
 
         {/* TABLE */}
         {tab === "table" && <>
-          <div style={{ display: "flex", gap: 10, marginBottom: 14, flexWrap: "wrap", alignItems: "center" }}>
+          {/* Search bar + result count */}
+          <div style={{ display: "flex", gap: 10, marginBottom: 10, flexWrap: "wrap", alignItems: "center" }}>
             <div style={{ flex: 1, minWidth: 220, position: "relative" }}>
               <span style={{ position: "absolute", left: 12, top: "50%", transform: "translateY(-50%)", fontSize: 14, pointerEvents: "none", opacity: .4 }}>🔍</span>
-              <Inp value={q} onChange={e => setQ(e.target.value)} placeholder="Search title, company, skills…" sx={{ paddingLeft: 34 }} />
+              <Inp value={q} onChange={e => setQ(e.target.value)} placeholder="Search title, company, skills, location…" sx={{ paddingLeft: 34 }} />
             </div>
-            <span style={{ color: "#334155", fontSize: 12 }}>{visible.length} result{visible.length !== 1 ? "s" : ""}</span>
+            <span style={{ color: "#334155", fontSize: 12 }}>
+              {jobs.length > 0 && <span style={{ color: "#475569" }}>{jobs.length} total · </span>}
+              {visible.length} shown
+            </span>
             {q && <button onClick={() => setQ("")} style={{ background: "transparent", border: "none", color: "#64748b", cursor: "pointer", fontSize: 12, fontFamily: "inherit" }}>✕ Clear</button>}
+            <Btn onClick={openAdd} v="pri" sx={{ marginLeft: "auto" }}>＋ Add Job</Btn>
           </div>
+
+          {/* ── Bulk action toolbar (slides in when rows are selected) ── */}
+          {selected.size > 0 && (
+            <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", background: "rgba(79,70,229,0.1)", border: "1px solid rgba(79,70,229,0.35)", borderRadius: 12, padding: "10px 16px", marginBottom: 12, animation: "mi .15s ease" }}>
+              <span style={{ color: "#a5b4fc", fontWeight: 700, fontSize: 13, marginRight: 4 }}>
+                ☑ {selected.size} selected
+              </span>
+              {/* Bulk Status */}
+              <select value={bulkStatus} onChange={e => { setBulkStatus(e.target.value); if (e.target.value) bulkSetStatus(e.target.value); }}
+                style={{ background: "#0a1628", border: "1px solid #1e2d45", borderRadius: 8, padding: "6px 10px", color: bulkStatus ? "#e2e8f0" : "#475569", fontSize: 11, cursor: "pointer", outline: "none", fontFamily: "inherit" }}>
+                <option value="">Set Status…</option>
+                {STATUS.map(s => <option key={s} value={s}>{s}</option>)}
+              </select>
+              {/* Bulk Priority */}
+              <select value={bulkPriority} onChange={e => { setBulkPriority(e.target.value); if (e.target.value) bulkSetPriority(e.target.value); }}
+                style={{ background: "#0a1628", border: "1px solid #1e2d45", borderRadius: 8, padding: "6px 10px", color: bulkPriority ? "#e2e8f0" : "#475569", fontSize: 11, cursor: "pointer", outline: "none", fontFamily: "inherit" }}>
+                <option value="">Set Priority…</option>
+                {["High", "Medium", "Low"].map(p => <option key={p} value={p}>{p}</option>)}
+              </select>
+              <Btn v="grn" onClick={bulkExport} sx={{ padding: "6px 12px", fontSize: 11 }}>📥 Export Selected</Btn>
+              <Btn v="red" onClick={bulkDelete} sx={{ padding: "6px 12px", fontSize: 11 }}>🗑 Delete {selected.size}</Btn>
+              <button onClick={clearSelection} style={{ background: "transparent", border: "none", color: "#475569", cursor: "pointer", fontSize: 12, marginLeft: "auto", fontFamily: "inherit" }}>✕ Deselect all</button>
+            </div>
+          )}
+
           <div style={{ overflowX: "auto", borderRadius: 14, border: "1px solid #0a1628" }}>
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
               <thead>
                 <tr style={{ background: "#06101e", borderBottom: "1px solid #0a1628" }}>
-                  {[["title", "Role", 220], ["company", "Company", 130], ["location", "Location", 100], ["salary", "Salary", 95], ["status", "Status", 130], ["priority", "Pri", 65], ["deadline", "Deadline", 105], ["applieddate", "Applied", 85], ["", "Actions", 140]].map(([k, h, w]) => (
-                    <th key={h} onClick={k ? () => toggleSort(k) : undefined} style={{ padding: "10px 13px", color: "#334155", fontWeight: 700, fontSize: 10, letterSpacing: "0.08em", textAlign: "left", cursor: k ? "pointer" : "default", minWidth: w, userSelect: "none" }}>{h}{k && <span style={{ marginLeft: 3 }}>{sIcon(k)}</span>}</th>
+                  {/* Checkbox — select all */}
+                  <th style={{ padding: "10px 8px 10px 14px", width: 36 }}>
+                    <input type="checkbox"
+                      checked={visible.length > 0 && selected.size === visible.length}
+                      ref={el => { if (el) el.indeterminate = selected.size > 0 && selected.size < visible.length; }}
+                      onChange={toggleSelectAll}
+                      style={{ cursor: "pointer", accentColor: "#4f46e5", width: 14, height: 14 }} />
+                  </th>
+                  {[["title", "Role", 200], ["company", "Company", 120], ["location", "Location", 95], ["salary", "Salary", 90], ["status", "Status", 130], ["priority", "Pri", 60], ["deadline", "Deadline", 105], ["applieddate", "Applied", 80], ["", "Actions", 170]].map(([k, h, w]) => (
+                    <th key={h} onClick={k ? () => toggleSort(k) : undefined}
+                      style={{ padding: "10px 13px", color: "#334155", fontWeight: 700, fontSize: 10, letterSpacing: "0.08em", textAlign: "left", cursor: k ? "pointer" : "default", minWidth: w, userSelect: "none" }}>
+                      {h}{k && <span style={{ marginLeft: 3 }}>{sIcon(k)}</span>}
+                    </th>
                   ))}
                 </tr>
               </thead>
               <tbody>
-                {visible.length === 0 && <tr><td colSpan={9} style={{ textAlign: "center", padding: "60px", color: "#1e2d45" }}><div style={{ fontSize: 32, marginBottom: 8 }}>📭</div><div style={{ fontSize: 13, color: "#334155" }}>No jobs match your filters</div></td></tr>}
-                {visible.map(job => (
-                  <tr key={job.id} className="row" style={{ borderBottom: "1px solid #06101e" }}>
-                    <td style={{ padding: "11px 13px" }}>
-                      <div style={{ color: "#e2e8f0", fontWeight: 600, fontSize: 13, marginBottom: 2 }}>
-                        {job.applylink ? <a href={job.applylink} target="_blank" rel="noreferrer" style={{ color: "#60a5fa", textDecoration: "none" }}>{job.title}</a> : job.title}
-                      </div>
-                      {job.skills && <div style={{ color: "#334155", fontSize: 10 }}>{job.skills.split(",").slice(0, 3).join(" · ")}</div>}
-                      {profile.skills && <MatchBadge score={calcMatchScore(job.skills, profile.skills)} />}
-                    </td>
-                    <td style={{ padding: "11px 13px", color: "#94a3b8", fontWeight: 500 }}>{job.company}</td>
-                    <td style={{ padding: "11px 13px", color: "#475569", whiteSpace: "nowrap", fontSize: 11 }}>{job.location}</td>
-                    <td style={{ padding: "11px 13px", color: "#a78bfa", whiteSpace: "nowrap", fontWeight: 600 }}>{job.salary || "—"}</td>
-                    <td style={{ padding: "11px 13px" }}>
-                      <Badge s={job.status} />
-                      <select value={job.status} onChange={e => setStatus(job.id, e.target.value)} style={{ display: "block", marginTop: 4, background: "#070f1c", border: "1px solid #1e2d45", borderRadius: 6, padding: "2px 6px", color: "#475569", fontSize: 10, cursor: "pointer", outline: "none", width: "100%", fontFamily: "inherit" }}>
-                        {STATUS.map(s => <option key={s}>{s}</option>)}
-                      </select>
-                    </td>
-                    <td style={{ padding: "11px 13px" }}><PriBadge p={job.priority} /></td>
-                    <td style={{ padding: "11px 13px" }}><Deadline date={job.deadline} />{job.deadline && <div style={{ color: "#334155", fontSize: 9, marginTop: 2 }}>{fmtDate(job.deadline)}</div>}</td>
-                    <td style={{ padding: "11px 13px", color: "#334155", fontSize: 10, whiteSpace: "nowrap" }}>{fmtDate(job.applieddate)}</td>
-                    <td style={{ padding: "11px 13px" }}>
-                      <div style={{ display: "flex", gap: 3, flexWrap: "wrap" }}>
-                        {[["👁", "Details", () => setShowDetail(job)], ["🎙", "Prep", () => doPrep(job)], ["✉", "Cover", () => { setShowCover(job); setCoverOut(""); }], ["📅", "Cal", () => addToCalendar(job)], ["✏️", "Edit", () => openEdit(job)], ["🗑", "Del", () => delJob(job.id)]].map(([ic, tt, fn]) => (
-                          <button key={tt} onClick={fn} title={tt} className="hbtn" style={{ background: "#070f1c", border: "1px solid #1e2d45", borderRadius: 7, padding: "4px 6px", color: "#64748b", cursor: "pointer", fontSize: 11 }}>{ic}</button>
-                        ))}
-                      </div>
-                    </td>
-                  </tr>
-                ))}
+                {visible.length === 0 && (
+                  <tr><td colSpan={10} style={{ textAlign: "center", padding: "60px", color: "#1e2d45" }}>
+                    <div style={{ fontSize: 32, marginBottom: 8 }}>📭</div>
+                    <div style={{ fontSize: 13, color: "#334155" }}>No jobs match your filters</div>
+                  </td></tr>
+                )}
+                {visible.map(job => {
+                  const isSelected = selected.has(job.id);
+                  return (
+                    <tr key={job.id} className="row"
+                      style={{ borderBottom: "1px solid #06101e", background: isSelected ? "rgba(79,70,229,0.07)" : undefined, transition: "background .1s" }}>
+                      {/* Checkbox */}
+                      <td style={{ padding: "11px 8px 11px 14px" }}>
+                        <input type="checkbox" checked={isSelected} onChange={() => toggleSelect(job.id)}
+                          style={{ cursor: "pointer", accentColor: "#4f46e5", width: 14, height: 14 }} />
+                      </td>
+                      {/* Role */}
+                      <td style={{ padding: "11px 13px" }}>
+                        <div style={{ color: "#e2e8f0", fontWeight: 600, fontSize: 13, marginBottom: 2 }}>
+                          {job.applylink
+                            ? <a href={job.applylink} target="_blank" rel="noreferrer" style={{ color: "#60a5fa", textDecoration: "none" }}>{job.title}</a>
+                            : job.title}
+                        </div>
+                        {job.skills && <div style={{ color: "#334155", fontSize: 10 }}>{job.skills.split(",").slice(0, 3).join(" · ")}</div>}
+                        {profile.skills && <MatchBadge score={calcMatchScore(job.skills, profile.skills)} />}
+                      </td>
+                      <td style={{ padding: "11px 13px", color: "#94a3b8", fontWeight: 500 }}>{job.company}</td>
+                      <td style={{ padding: "11px 13px", color: "#475569", whiteSpace: "nowrap", fontSize: 11 }}>{job.location}</td>
+                      <td style={{ padding: "11px 13px", color: "#a78bfa", whiteSpace: "nowrap", fontWeight: 600 }}>{job.salary || "—"}</td>
+                      {/* Status with inline dropdown */}
+                      <td style={{ padding: "11px 13px" }}>
+                        <Badge s={job.status} />
+                        <select value={job.status} onChange={e => setStatus(job.id, e.target.value)}
+                          style={{ display: "block", marginTop: 4, background: "#070f1c", border: "1px solid #1e2d45", borderRadius: 6, padding: "2px 6px", color: "#475569", fontSize: 10, cursor: "pointer", outline: "none", width: "100%", fontFamily: "inherit" }}>
+                          {STATUS.map(s => <option key={s}>{s}</option>)}
+                        </select>
+                      </td>
+                      <td style={{ padding: "11px 13px" }}><PriBadge p={job.priority} /></td>
+                      {/* Deadline with inline date edit */}
+                      <td style={{ padding: "11px 13px" }}>
+                        <Deadline date={job.deadline} />
+                        <input type="date" defaultValue={job.deadline || ""} title="Edit deadline"
+                          onBlur={async e => {
+                            const val = e.target.value;
+                            if (val !== (job.deadline || "")) {
+                              await supabase.from("jobs").update({ deadline: val || null }).eq("id", job.id);
+                              fetchJobs();
+                              notify("Deadline updated ✓");
+                            }
+                          }}
+                          style={{ display: "block", marginTop: 3, background: "transparent", border: "none", borderBottom: "1px solid #1e2d45", color: "#334155", fontSize: 9, fontFamily: "inherit", outline: "none", cursor: "pointer", width: "100%" }} />
+                      </td>
+                      <td style={{ padding: "11px 13px", color: "#334155", fontSize: 10, whiteSpace: "nowrap" }}>{fmtDate(job.applieddate)}</td>
+                      {/* Actions */}
+                      <td style={{ padding: "11px 13px" }}>
+                        <div style={{ display: "flex", gap: 3, flexWrap: "wrap" }}>
+                          {[
+                            ["👁", "Details", () => setShowDetail(job)],
+                            ["🎙", "Prep", () => doPrep(job)],
+                            ["✉", "Cover", () => { setShowCover(job); setCoverOut(""); }],
+                            ["📅", "Calendar", () => addToCalendar(job)],
+                            ["📋", "Duplicate", () => duplicateJob(job)],
+                            ["✏️", "Edit", () => openEdit(job)],
+                            ["🗑", "Delete", () => delJob(job.id)],
+                          ].map(([ic, tt, fn]) => (
+                            <button key={tt} onClick={fn} title={tt} className="hbtn"
+                              style={{ background: tt === "Delete" ? "rgba(220,38,38,0.07)" : "#070f1c", border: `1px solid ${tt === "Delete" ? "#450a0a" : "#1e2d45"}`, borderRadius: 7, padding: "4px 6px", color: tt === "Delete" ? "#f87171" : "#64748b", cursor: "pointer", fontSize: 11 }}>
+                              {ic}
+                            </button>
+                          ))}
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
+          </div>
+
+          {/* Footer summary */}
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 4px 0", flexWrap: "wrap", gap: 8 }}>
+            <span style={{ color: "#1e2d45", fontSize: 11 }}>
+              {visible.length} shown · {jobs.length} total stored
+              {selected.size > 0 && <span style={{ color: "#a5b4fc", marginLeft: 8 }}>· {selected.size} selected</span>}
+            </span>
+            {selected.size > 0 && (
+              <div style={{ display: "flex", gap: 6 }}>
+                <Btn v="grn" onClick={bulkExport} sx={{ padding: "5px 10px", fontSize: 11 }}>📥 Export {selected.size}</Btn>
+                <Btn v="red" onClick={bulkDelete} sx={{ padding: "5px 10px", fontSize: 11 }}>🗑 Delete {selected.size}</Btn>
+              </div>
+            )}
           </div>
         </>}
 
