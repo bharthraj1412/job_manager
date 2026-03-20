@@ -110,7 +110,7 @@ ${prof.portfolio? `<p style="margin:0;color:#555;font-size:12px">${prof.portfoli
 </body></html>`;
 }
 
-async function callAI(prompt, sys = '', _unusedKey, modelOverride, proxyOverride) {
+async function callAI(prompt, sys = '', apiKeyOverride, modelOverride, proxyOverride) {
   const messages = [];
   if (sys) messages.push({ role: 'system', content: sys });
   messages.push({ role: 'user', content: prompt });
@@ -118,9 +118,12 @@ async function callAI(prompt, sys = '', _unusedKey, modelOverride, proxyOverride
   const model   = modelOverride   || NVIDIA_MODEL;
   const apiUrl  = proxyOverride   || NVIDIA_API_URL;
 
+  const headers = { 'Content-Type': 'application/json' };
+  if (apiKeyOverride) headers['Authorization'] = `Bearer ${apiKeyOverride}`;
+
   const r = await fetch(apiUrl, {
     method:  'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers,
     body: JSON.stringify({ model, messages, max_tokens: 4096 }),
   });
   if (!r.ok) { const t = await r.text(); throw new Error(`API ${r.status}: ${t}`); }

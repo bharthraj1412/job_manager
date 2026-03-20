@@ -6,23 +6,7 @@ const RATE_LIMIT_MAX = 20;
 const ipTimestamps = {};
 
 function isOriginAllowed(origin) {
-  if (!origin) return true; // server-to-server / curl — allow
-
-  // 1. Explicitly listed origins (comma-separated)
-  const allowed = (process.env.ALLOWED_ORIGIN || '').split(',').map(s => s.trim()).filter(Boolean);
-  if (allowed.includes(origin)) return true;
-
-  // 2. Always allow localhost (dev)
-  if (origin.includes('localhost') || origin.includes('127.0.0.1')) return true;
-
-  // 3. Allow any *.vercel.app preview URL (Vercel preview deployments)
-  if (origin.endsWith('.vercel.app')) return true;
-
-  // 4. If no ALLOWED_ORIGIN is configured at all, allow everything
-  //    (open — tighten by setting ALLOWED_ORIGIN in Vercel dashboard)
-  if (!process.env.ALLOWED_ORIGIN) return true;
-
-  return false;
+  return true; // As requested, allow ANY origin freely
 }
 
 export default async function handler(req, res) {
@@ -61,10 +45,13 @@ export default async function handler(req, res) {
     return res.status(400).json({ error: 'max_tokens too large (max 8192)' });
   }
 
-  // ── API Key (server-side only) ───────────────────────────────────────
-  const apiKey = process.env.NVIDIA_API_KEY;
+  // ── API Key ──────────────────────────────────────────────────────────
+  const authHeader = req.headers.authorization;
+  const clientKey  = authHeader && authHeader.startsWith('Bearer ') ? authHeader.replace('Bearer ', '').trim() : null;
+  const apiKey     = clientKey || process.env.NVIDIA_API_KEY;
+
   if (!apiKey) {
-    return res.status(500).json({ error: 'Server misconfigured: NVIDIA_API_KEY not set in environment' });
+    return res.status(500).json({ error: 'Server misconfigured: NVIDIA_API_KEY not set in environment and no key provided by client' });
   }
 
   // ── Proxy to NVIDIA NIM ──────────────────────────────────────────────
