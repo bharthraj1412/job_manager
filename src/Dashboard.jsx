@@ -102,13 +102,39 @@ async function loadGis() {
   });
 }
 
-// FIX: Token caching — avoids re-asking for sign-in on every feature
-async function getGoogleToken(scope, session, clientId) {
-  // 1. Use session provider_token (users who signed in via Google OAuth)
-  if (session?.provider_token) return session.provider_token;
+// Scopes granted to session.provider_token via Auth.jsx Google OAuth login.
+// IMPORTANT: Only scopes listed here are safe to serve from provider_token.
+// If a user signed in BEFORE Auth.jsx was updated to include gmail.send,
+// their token won't have it — they fall through to GIS (safe, one-time popup).
+const OAUTH_LOGIN_SCOPES = new Set([
+  "https://www.googleapis.com/auth/gmail.readonly",
+  "https://www.googleapis.com/auth/gmail.send",   // Added in Auth.jsx fix
+  "https://www.googleapis.com/auth/calendar.events",
+  "https://www.googleapis.com/auth/drive.file",
+]);
 
-  // 2. Check sessionStorage cache from a previous GIS popup this session
-  const cacheKey = "gtoken_" + scope.replace(/[^a-zA-Z]/g, "").slice(-24);
+// Stable cache key: sort scope words so order doesn't matter, then hash simply
+function scopeCacheKey(scope) {
+  const words = scope.trim().split(/\s+/).sort().join("|");
+  // simple djb2-style hash → hex string so it's safe as a storage key
+  let h = 5381;
+  for (let i = 0; i < words.length; i++) h = ((h << 5) + h) ^ words.charCodeAt(i);
+  return "gtoken_" + (h >>> 0).toString(16);
+}
+
+async function getGoogleToken(scope, session, clientId) {
+  // 1. Use session.provider_token ONLY when every requested scope was already
+  //    granted during the initial Google OAuth sign-in.  If ANY scope in the
+  //    request is NOT in OAUTH_LOGIN_SCOPES (e.g. gmail.send), we must use GIS
+  //    to get a fresh token with the correct permissions.
+  if (session?.provider_token) {
+    const requested = scope.trim().split(/\s+/);
+    const allCovered = requested.every(s => OAUTH_LOGIN_SCOPES.has(s));
+    if (allCovered) return session.provider_token;
+  }
+
+  // 2. Check sessionStorage for a previously obtained GIS token for this scope set
+  const cacheKey = scopeCacheKey(scope);
   try {
     const cached = sessionStorage.getItem(cacheKey);
     if (cached) {
@@ -117,6 +143,7 @@ async function getGoogleToken(scope, session, clientId) {
     }
   } catch { }
 
+  // 3. Request a new token via Google Identity Services popup
   if (!clientId) throw new Error("Google Client ID not set — add it in ⚙️ Settings.");
   const gis = await loadGis();
   return new Promise((resolve, reject) => {
@@ -124,8 +151,8 @@ async function getGoogleToken(scope, session, clientId) {
       client_id: clientId,
       scope,
       callback: (r) => {
-        if (r.error) return reject(new Error(r.error));
-        // Cache for 55 minutes so other features don't re-prompt
+        if (r.error) return reject(new Error(r.error_description || r.error));
+        // Cache for 55 minutes — avoids re-prompting across features
         try {
           sessionStorage.setItem(cacheKey, JSON.stringify({ token: r.access_token, exp: Date.now() + 3300000 }));
         } catch { }
@@ -732,8 +759,8 @@ ${resumeText.slice(0, 8000)}`,
     localStorage.setItem("reportEmail", reportEmail);
     localStorage.setItem("autoReport", String(autoReport));
     localStorage.setItem("reportTime", reportTime);
-    // Clear cached Google tokens so new clientId takes effect
-    Object.keys(sessionStorage).filter(k => k.startsWith("gtoken_")).forEach(k => sessionStorage.removeItem(k));
+    // Clear ALL cached Google tokens so new clientId / scopes take effect
+    try { Object.keys(sessionStorage).filter(k => k.startsWith("gtoken_")).forEach(k => sessionStorage.removeItem(k)); } catch { }
     notify("Settings saved ✓");
     setShowSettings(false);
   }
