@@ -25,13 +25,70 @@ const GMAIL_STATUS_COLORS = {
 };
 const TYPES = ["Full-time","Part-time","Internship","Contract","Freelance"];
 
+const ADZUNA_CATEGORIES = [
+  { value: "", label: "All Categories" },
+  { value: "it-jobs", label: "IT / Software" },
+  { value: "engineering-jobs", label: "Engineering" },
+  { value: "accounting-finance-jobs", label: "Finance / Accounting" },
+  { value: "sales-jobs", label: "Sales" },
+  { value: "marketing-jobs", label: "Marketing" },
+  { value: "hr-jobs", label: "HR / Recruitment" },
+  { value: "graduate-jobs", label: "Graduate / Fresher" },
+  { value: "healthcare-nursing-jobs", label: "Healthcare" },
+  { value: "teaching-jobs", label: "Teaching / Education" },
+  { value: "logistics-warehouse-jobs", label: "Logistics" },
+  { value: "trade-construction-jobs", label: "Construction" },
+  { value: "legal-jobs", label: "Legal" },
+  { value: "creative-design-jobs", label: "Design / Creative" },
+];
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 const fmtDate = d => d ? new Date(d).toLocaleDateString("en-IN",{day:"numeric",month:"short"}) : "—";
 const daysDiff = d => d ? Math.ceil((new Date(d)-new Date())/86400000) : null;
 
-const NVIDIA_API_URL  = "/api/ai";   // Proxied: Vite in dev, Vercel function in prod
+const NVIDIA_API_URL  = "/api/ai";
 const NVIDIA_API_KEY  = "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";
 const NVIDIA_MODEL    = "deepseek-ai/deepseek-r1";
+
+// Extract skills by scanning job description text
+function extractSkillsFromText(text) {
+  if (!text) return "";
+  const SKILL_LIST = [
+    "Python","Java","JavaScript","TypeScript","React","Angular","Vue","Node.js","Next.js","Nuxt",
+    "SQL","MySQL","PostgreSQL","MongoDB","Redis","Oracle","SQLite","DynamoDB","Firebase",
+    "AWS","Azure","GCP","Docker","Kubernetes","Terraform","Jenkins","CI/CD","GitHub Actions",
+    "HTML","CSS","SASS","Bootstrap","Tailwind","Webpack","Vite","REST API","GraphQL",
+    "PHP","Ruby","Go","Rust","Swift","Kotlin","C++","C#",".NET","Spring Boot","Hibernate",
+    "Django","Flask","FastAPI","Express","Laravel","Rails","Microservices","gRPC",
+    "Machine Learning","Deep Learning","AI/ML","TensorFlow","PyTorch","NLP","OpenCV","Scikit-learn",
+    "Data Science","R","Tableau","Power BI","Excel","Apache Spark","Hadoop","Kafka","Airflow",
+    "Linux","Unix","Bash","Shell Scripting","Git","Agile","Scrum","Jira","Confluence",
+    "Android","iOS","Flutter","React Native","Unity","Unreal","Figma","Adobe XD","Photoshop",
+    "Salesforce","SAP","ERP","Selenium","Cypress","Jest","JUnit","Testing","QA",
+    "Networking","CCNA","DevOps","SRE","Security","Cybersecurity","Blockchain","Solidity",
+    "AutoCAD","MATLAB","SolidWorks","VLSI","Embedded","Arduino","ROS","PLC",
+  ];
+  const found = [];
+  const lower = text.toLowerCase();
+  for (const skill of SKILL_LIST) {
+    if (lower.includes(skill.toLowerCase()) && !found.includes(skill)) {
+      found.push(skill);
+    }
+    if (found.length >= 8) break;
+  }
+  return found.join(", ");
+}
+
+// Format salary smartly — Adzuna returns annual numbers for India
+function formatSalary(min, max) {
+  if (!min) return "Not disclosed";
+  const fmt = (n) => {
+    if (n >= 100000) return `₹${(n / 100000).toFixed(1)} LPA`;
+    return `₹${Math.round(n).toLocaleString("en-IN")}`;
+  };
+  if (max && max !== min) return `${fmt(min)} – ${fmt(max)}`;
+  return fmt(min);
+}
 
 async function callGemini(prompt, sysprompt="", apiKey=NVIDIA_API_KEY, modelName=NVIDIA_MODEL, proxyUrl=NVIDIA_API_URL) {
   if (!apiKey) throw new Error("API key is required. Please add it in Settings.");
@@ -50,7 +107,6 @@ async function callGemini(prompt, sysprompt="", apiKey=NVIDIA_API_KEY, modelName
   }
   const d = await r.json();
   if (d.error) throw new Error(d.error.message);
-  // DeepSeek-R1 returns reasoning_content separately — we return the main content
   return d.choices?.[0]?.message?.content || "";
 }
 
@@ -190,12 +246,18 @@ export default function Dashboard({ session }) {
   const [form, setForm] = useState(blank);
   const upd = (k,v) => setForm(f=>({...f,[k]:v}));
 
-  // search
-  const [sq, setSq]       = useState("");
-  const [sr, setSr]       = useState([]);
-  const [sLoad, setSLoad] = useState(false);
-  const [sErr,  setSErr]  = useState("");
-  const [sPage, setSPage] = useState(1);
+  // ── Search state ──────────────────────────────────────────────────────────
+  const [sq, setSq]           = useState("");
+  const [sr, setSr]           = useState([]);
+  const [sLoad, setSLoad]     = useState(false);
+  const [sErr,  setSErr]      = useState("");
+  const [sPage, setSPage]     = useState(1);
+  // Search filters
+  const [sLocation, setSLocation] = useState("");
+  const [sJobType, setSJobType]   = useState("all");
+  const [sSalaryMin, setSSalaryMin] = useState("");
+  const [sCategory, setSCategory] = useState("");
+  const [showFilters, setShowFilters] = useState(false);
 
   // prep / cover
   const [prepOut, setPrepOut]     = useState(""); const [prepLoad, setPrepLoad] = useState(false);
@@ -238,9 +300,25 @@ export default function Dashboard({ session }) {
     if (!error) fetchJobs();
   }
   async function addFromSearch(r) {
-    const payload = {title:r.title,company:r.company,location:r.location||"",type:r.type||"Full-time",salary:r.salary||"—",skills:r.skills||"",source:r.source||"AI Search",applylink:r.applylink||"",status:"Bookmarked",applieddate:"",deadline:"",notes:r.description||"",priority:"Medium",user_id:session.user.id};
+    const payload = {
+      title:       r.title       || "Untitled",
+      company:     r.company     || "",
+      location:    r.location    || "",
+      type:        r.type        || "Full-time",
+      salary:      r.salary      || "Not disclosed",
+      skills:      r.skills      || "",
+      source:      r.source      || "Adzuna",
+      applylink:   r.applylink   || "",
+      status:      "Bookmarked",
+      applieddate: "",
+      deadline:    "",
+      notes:       [r.category ? `Category: ${r.category}` : "", r.description || ""].filter(Boolean).join("\n").trim(),
+      priority:    "Medium",
+      user_id:     session.user.id
+    };
     const {error} = await supabase.from('jobs').insert([payload]);
     if(!error) { fetchJobs(); notify(`"${r.title}" added ✓`); }
+    else notify(error.message, "err");
   }
   async function addGmailToTracker(email) {
     const payload = {title:email.jobTitle||"Position",company:email.company||"",location:"",type:"Full-time",salary:"",skills:"",source:"Gmail",applylink:"",status:email.status==="Interview Scheduled"?"Interview":email.status==="Offer Received"?"Offer":email.status==="Rejected"?"Rejected":"Applied",applieddate:email.date?email.date.split("T")[0]:"",deadline:"",notes:email.snippet||"",priority:"Medium",user_id:session.user.id};
@@ -263,21 +341,62 @@ export default function Dashboard({ session }) {
   function toggleSort(k){if(sortK===k)setSortD(d=>d==="asc"?"desc":"asc");else{setSortK(k);setSortD("asc");}}
   const sIcon=k=>sortK===k?(sortD==="asc"?"↑":"↓"):<span style={{opacity:.2}}>↕</span>;
 
+  // ── Adzuna helpers ────────────────────────────────────────────────────────
+  function buildAdzunaUrl(page = 1) {
+    let url = `https://api.adzuna.com/v1/api/jobs/in/search/${page}?app_id=${adzunaId}&app_key=${adzunaKey}&results_per_page=50&content-type=application/json`;
+    if (sq.trim())        url += `&what=${encodeURIComponent(sq.trim())}`;
+    if (sLocation.trim()) url += `&where=${encodeURIComponent(sLocation.trim())}`;
+    if (sJobType === "full-time")  url += `&full_time=1`;
+    if (sJobType === "part-time")  url += `&part_time=1`;
+    if (sJobType === "contract")   url += `&contract=1`;
+    if (sJobType === "permanent")  url += `&permanent=1`;
+    if (sSalaryMin)       url += `&salary_min=${sSalaryMin}`;
+    if (sCategory)        url += `&category=${sCategory}`;
+    return url;
+  }
+
+  function mapAdzuna(results) {
+    return results.map(j => {
+      const rawDesc = j.description || "";
+      const cleanDesc = rawDesc.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+      const contractType = j.contract_type || "";
+      const contractTime = j.contract_time || "";
+      let jobType = "Full-time";
+      if (contractTime === "part_time")   jobType = "Part-time";
+      else if (contractType === "contract") jobType = "Contract";
+      return {
+        title:       j.title?.replace(/<[^>]+>/g, "") || "",
+        company:     j.company?.display_name || "Unknown",
+        location:    j.location?.display_name || "",
+        type:        jobType,
+        salary:      formatSalary(j.salary_min, j.salary_max),
+        skills:      extractSkillsFromText(cleanDesc),
+        source:      "Adzuna",
+        applylink:   j.redirect_url || "",
+        description: cleanDesc.slice(0, 400) + (cleanDesc.length > 400 ? "…" : ""),
+        category:    j.category?.label || "",
+        postedDate:  j.created ? new Date(j.created).toLocaleDateString("en-IN",{day:"numeric",month:"short"}) : "",
+      };
+    });
+  }
+
   // ── Job Search (Adzuna Live Jobs) ─────────────────────────────────────────
   async function doSearch() {
-    if(!sq.trim()) return;
+    if (!sq.trim() && !sLocation.trim() && !sCategory) {
+      setSErr("Enter at least a keyword or location to search.");
+      return;
+    }
     setSLoad(true); setSr([]); setSErr(""); setSPage(1);
     if (!adzunaId || !adzunaKey) {
       setSErr("Adzuna App ID and Key required — add them in ⚙️ Settings.");
       setSLoad(false); return;
     }
     try {
-      const url = `https://api.adzuna.com/v1/api/jobs/in/search/1?app_id=${adzunaId}&app_key=${adzunaKey}&results_per_page=50&what=${encodeURIComponent(sq)}&content-type=application/json`;
-      const res = await fetch(url);
+      const res = await fetch(buildAdzunaUrl(1));
       if (!res.ok) throw new Error(`Adzuna error ${res.status}`);
       const data = await res.json();
       if (!data.results?.length) {
-        setSErr("No jobs found — try different keywords.");
+        setSErr("No jobs found — try different keywords or broaden your filters.");
         setSLoad(false); return;
       }
       setSr(mapAdzuna(data.results));
@@ -289,8 +408,7 @@ export default function Dashboard({ session }) {
     const nextPage = sPage + 1;
     setSLoad(true);
     try {
-      const url = `https://api.adzuna.com/v1/api/jobs/in/search/${nextPage}?app_id=${adzunaId}&app_key=${adzunaKey}&results_per_page=50&what=${encodeURIComponent(sq)}&content-type=application/json`;
-      const res = await fetch(url);
+      const res = await fetch(buildAdzunaUrl(nextPage));
       if (!res.ok) throw new Error(`Adzuna error ${res.status}`);
       const data = await res.json();
       if (!data.results?.length) {
@@ -301,22 +419,6 @@ export default function Dashboard({ session }) {
       }
     } catch(err) { setSErr(err.message); }
     setSLoad(false);
-  }
-
-  function mapAdzuna(results) {
-    return results.map(j => ({
-      title:       j.title,
-      company:     j.company?.display_name || "Unknown",
-      location:    j.location?.display_name || "",
-      type:        j.contract_time === "part_time" ? "Part-time" : "Full-time",
-      salary:      j.salary_min
-                     ? `₹${Math.round(j.salary_min).toLocaleString()} – ₹${Math.round(j.salary_max || j.salary_min).toLocaleString()}`
-                     : "Not disclosed",
-      skills:      "",
-      source:      "Adzuna",
-      applylink:   j.redirect_url || "",
-      description: j.description ? j.description.slice(0, 150) + "…" : "",
-    }));
   }
 
   // ── AI Interview Prep ─────────────────────────────────────────────────────
@@ -593,7 +695,7 @@ export default function Dashboard({ session }) {
   const soonDue  = jobs.filter(j=>j.deadline&&daysDiff(j.deadline)>=0&&daysDiff(j.deadline)<=7&&!["Rejected","Withdrawn","Offer"].includes(j.status)).length;
   const filteredGmail = gmailEmails.filter(e=>gmailFilter==="all"||e.status===gmailFilter);
 
-  // ─────────────────────────────────────────────────────────────────────────
+  // ── Render ────────────────────────────────────────────────────────────────
   return (
     <div style={{fontFamily:"'DM Sans',sans-serif",background:"#050c1a",minHeight:"100vh",color:"#e2e8f0"}}>
       <link href="https://fonts.googleapis.com/css2?family=Syne:wght@700;800&family=DM+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet"/>
@@ -614,6 +716,9 @@ export default function Dashboard({ session }) {
         .gtab{padding:5px 13px;border-radius:20px;font-size:11px;font-weight:600;cursor:pointer;border:1px solid rgba(99,150,210,0.2);background:transparent;color:#64748b;font-family:inherit;transition:all .2s}
         .gtab:hover{border-color:#06b6d4;color:#06b6d4}
         .gtab.active{background:#2563eb;border-color:#2563eb;color:#fff}
+        .filter-chip{padding:4px 10px;border-radius:20px;font-size:11px;font-weight:600;cursor:pointer;border:1px solid #1e293b;background:#0a111e;color:#64748b;font-family:inherit;transition:all .15s}
+        .filter-chip:hover{border-color:#818cf8;color:#818cf8}
+        .filter-chip.active{background:#1e1b4b;border-color:#4f46e5;color:#a5b4fc}
       `}</style>
       <input ref={fileRef} type="file" accept=".xlsx,.xls" style={{display:"none"}} onChange={importXLSX}/>
 
@@ -631,7 +736,7 @@ export default function Dashboard({ session }) {
             <p style={{color:"#1e293b",fontSize:11,margin:"0 0 0 31px"}}>Search · Track · Gmail · Export</p>
           </div>
           <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
-            <Btn onClick={()=>setShowSearch(true)} v="cyn">🔍 AI Search</Btn>
+            <Btn onClick={()=>setShowSearch(true)} v="cyn">🔍 Job Search</Btn>
             <Btn onClick={()=>setShowSettings(true)}>⚙️ Settings</Btn>
             <Btn onClick={()=>supabase.auth.signOut()} v="red">⏏️ Logout</Btn>
             <Btn onClick={openAdd}>＋ Add Job</Btn>
@@ -991,15 +1096,11 @@ export default function Dashboard({ session }) {
             <div style={{color:"#06b6d4",fontSize:10,fontWeight:700,letterSpacing:"0.1em",textTransform:"uppercase",marginBottom:10}}>
               🟢 Adzuna Job Search (Real Listings)
             </div>
-            <F label="Adzuna App ID">
-              <Inp value={adzunaId} onChange={e=>setAdzunaId(e.target.value)} placeholder="e.g. 538be205"/>
-            </F>
-            <F label="Adzuna App Key">
-              <Inp type="password" value={adzunaKey} onChange={e=>setAdzunaKey(e.target.value)} placeholder="your_app_key"/>
-            </F>
+            <F label="Adzuna App ID"><Inp value={adzunaId} onChange={e=>setAdzunaId(e.target.value)} placeholder="e.g. 538be205"/></F>
+            <F label="Adzuna App Key"><Inp type="password" value={adzunaKey} onChange={e=>setAdzunaKey(e.target.value)} placeholder="your_app_key"/></F>
           </div>
           <div style={{color:"#475569",fontSize:11,marginBottom:16,lineHeight:1.5,padding:"10px 12px",background:"#0a111e",borderRadius:8,border:"1px solid #1e293b"}}>
-            ℹ️ API key and settings are stored in your browser only (localStorage) and never sent to our servers.<br/>
+            ℹ️ Settings are stored in your browser only (localStorage).<br/>
             🤖 Powered by DeepSeek-R1 via NVIDIA NIM API.
           </div>
           <Btn v="pri" onClick={saveSettings} sx={{width:"100%",justifyContent:"center",padding:"11px"}}>Save Settings</Btn>
@@ -1028,52 +1129,166 @@ export default function Dashboard({ session }) {
         </Modal>
       )}
 
-      {/* AI Job Search */}
+      {/* ══ Job Search Modal ══ */}
       {showSearch&&(
-        <Modal title="🔍 AI Job Search" onClose={()=>{setShowSearch(false);setSr([]);setSq("");}}>
-          <p style={{color:"#64748b",fontSize:12,margin:"0 0 12px"}}>
-            {adzunaId && adzunaKey
-              ? "🟢 Live jobs from Adzuna — real listings with direct apply links."
-              : "🟡 Add your Adzuna App ID & Key in ⚙️ Settings to fetch real jobs."}
-          </p>
-          <div style={{display:"flex",gap:8,marginBottom:12}}>
-            <Inp value={sq} onChange={e=>setSq(e.target.value)} onKeyDown={e=>e.key==="Enter"&&doSearch()} placeholder='e.g. "IT fresher jobs 2026 Tamil Nadu"' sx={{flex:1}}/>
-            <Btn v="pri" onClick={doSearch} disabled={sLoad}>{sLoad?"Searching…":"Search"}</Btn>
+        <Modal title="🔍 Job Search" onClose={()=>{setShowSearch(false);setSr([]);setSq("");setSErr("");}} wide>
+          {/* Status bar */}
+          <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:14,padding:"8px 12px",background:"#0a111e",borderRadius:8,border:"1px solid #1e293b",fontSize:12}}>
+            <span style={{width:8,height:8,borderRadius:"50%",background:adzunaId&&adzunaKey?"#22c55e":"#f59e0b",flexShrink:0}}/>
+            <span style={{color:adzunaId&&adzunaKey?"#86efac":"#fbbf24"}}>
+              {adzunaId&&adzunaKey ? "Live jobs via Adzuna — real listings with direct apply links" : "Add Adzuna credentials in ⚙️ Settings to enable live job search"}
+            </span>
           </div>
-          {sLoad&&<div style={{textAlign:"center",padding:"28px",color:"#334155"}}>
-            <div style={{fontSize:28,display:"inline-block",animation:"spin 1.2s linear infinite"}}>🔍</div>
-            <p style={{fontSize:11,marginTop:8}}>Finding jobs…</p>
-          </div>}
-          {sErr&&<div style={{background:"#2a0a0a",border:"1px solid #7f1d1d",borderRadius:8,padding:"10px 14px",color:"#f87171",fontSize:12,marginBottom:8}}>{sErr}</div>}
+
+          {/* Main search bar */}
+          <div style={{display:"flex",gap:8,marginBottom:10}}>
+            <div style={{flex:1,position:"relative"}}>
+              <span style={{position:"absolute",left:11,top:"50%",transform:"translateY(-50%)",fontSize:14,pointerEvents:"none"}}>🔍</span>
+              <input
+                value={sq}
+                onChange={e=>setSq(e.target.value)}
+                onKeyDown={e=>e.key==="Enter"&&doSearch()}
+                placeholder='e.g. "React developer", "Data analyst fresher", "Python engineer remote"…'
+                style={{width:"100%",background:"#0a111e",border:"1px solid #334155",borderRadius:8,padding:"10px 12px 10px 34px",color:"#e2e8f0",fontSize:13,outline:"none",boxSizing:"border-box",fontFamily:"inherit"}}
+              />
+            </div>
+            <Btn v="pri" onClick={doSearch} disabled={sLoad} sx={{padding:"10px 20px",fontSize:13}}>
+              {sLoad ? <><span style={{display:"inline-block",animation:"spin 0.8s linear infinite"}}>◌</span> Searching…</> : "Search"}
+            </Btn>
+          </div>
+
+          {/* Filter toggle */}
+          <button onClick={()=>setShowFilters(f=>!f)} style={{background:"transparent",border:"1px solid #1e293b",borderRadius:8,padding:"6px 12px",color:showFilters?"#818cf8":"#475569",fontSize:11,fontWeight:600,cursor:"pointer",marginBottom:showFilters?10:14,display:"flex",alignItems:"center",gap:6,fontFamily:"inherit",transition:"all .15s"}}>
+            <span>{showFilters?"▲":"▼"}</span>
+            {showFilters ? "Hide Filters" : "Show Filters"}
+            {(sLocation||sJobType!=="all"||sSalaryMin||sCategory)&&(
+              <span style={{background:"#4f46e5",color:"#fff",borderRadius:999,padding:"1px 7px",fontSize:10,fontWeight:700}}>
+                {[sLocation,sJobType!=="all"?sJobType:"",sSalaryMin,sCategory].filter(Boolean).length} active
+              </span>
+            )}
+          </button>
+
+          {/* Filters panel */}
+          {showFilters&&(
+            <div style={{background:"#0a111e",border:"1px solid #1e293b",borderRadius:12,padding:16,marginBottom:14,display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
+              <F label="📍 Location">
+                <input
+                  value={sLocation}
+                  onChange={e=>setSLocation(e.target.value)}
+                  placeholder="e.g. Chennai, Bangalore, Remote…"
+                  style={{width:"100%",background:"#07101f",border:"1px solid #1e293b",borderRadius:8,padding:"8px 11px",color:"#e2e8f0",fontSize:12,outline:"none",fontFamily:"inherit",boxSizing:"border-box"}}
+                />
+              </F>
+              <F label="💼 Job Type">
+                <select value={sJobType} onChange={e=>setSJobType(e.target.value)} style={{width:"100%",background:"#07101f",border:"1px solid #1e293b",borderRadius:8,padding:"8px 11px",color:"#e2e8f0",fontSize:12,outline:"none",fontFamily:"inherit"}}>
+                  <option value="all">All Types</option>
+                  <option value="full-time">Full-Time</option>
+                  <option value="part-time">Part-Time</option>
+                  <option value="contract">Contract</option>
+                  <option value="permanent">Permanent</option>
+                </select>
+              </F>
+              <F label="🏷️ Category">
+                <select value={sCategory} onChange={e=>setSCategory(e.target.value)} style={{width:"100%",background:"#07101f",border:"1px solid #1e293b",borderRadius:8,padding:"8px 11px",color:"#e2e8f0",fontSize:12,outline:"none",fontFamily:"inherit"}}>
+                  {ADZUNA_CATEGORIES.map(c=><option key={c.value} value={c.value}>{c.label}</option>)}
+                </select>
+              </F>
+              <F label="💰 Min Salary (₹/yr)">
+                <input
+                  type="number"
+                  value={sSalaryMin}
+                  onChange={e=>setSSalaryMin(e.target.value)}
+                  placeholder="e.g. 300000 for ₹3 LPA"
+                  style={{width:"100%",background:"#07101f",border:"1px solid #1e293b",borderRadius:8,padding:"8px 11px",color:"#e2e8f0",fontSize:12,outline:"none",fontFamily:"inherit",boxSizing:"border-box"}}
+                />
+              </F>
+              {/* Quick location chips */}
+              <div style={{gridColumn:"1 / -1"}}>
+                <div style={{color:"#334155",fontSize:10,fontWeight:700,letterSpacing:"0.1em",textTransform:"uppercase",marginBottom:7}}>Quick Locations</div>
+                <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+                  {["Chennai","Bangalore","Mumbai","Hyderabad","Pune","Delhi","Remote","Coimbatore"].map(loc=>(
+                    <button key={loc} className={`filter-chip${sLocation===loc?" active":""}`} onClick={()=>setSLocation(sLocation===loc?"":loc)}>{loc}</button>
+                  ))}
+                </div>
+              </div>
+              {/* Quick category chips */}
+              <div style={{gridColumn:"1 / -1"}}>
+                <div style={{color:"#334155",fontSize:10,fontWeight:700,letterSpacing:"0.1em",textTransform:"uppercase",marginBottom:7}}>Quick Categories</div>
+                <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+                  {[["it-jobs","💻 IT"],["engineering-jobs","⚙️ Engineering"],["graduate-jobs","🎓 Fresher"],["accounting-finance-jobs","💹 Finance"],["marketing-jobs","📣 Marketing"]].map(([val,label])=>(
+                    <button key={val} className={`filter-chip${sCategory===val?" active":""}`} onClick={()=>setSCategory(sCategory===val?"":val)}>{label}</button>
+                  ))}
+                </div>
+              </div>
+              {/* Reset */}
+              <div style={{gridColumn:"1 / -1",textAlign:"right"}}>
+                <button onClick={()=>{setSLocation("");setSJobType("all");setSSalaryMin("");setSCategory("");}} style={{background:"transparent",border:"none",color:"#ef4444",fontSize:11,cursor:"pointer",fontFamily:"inherit",fontWeight:600}}>✕ Reset all filters</button>
+              </div>
+            </div>
+          )}
+
+          {/* Results */}
+          {sLoad&&!sr.length&&(
+            <div style={{textAlign:"center",padding:"36px",color:"#334155"}}>
+              <div style={{fontSize:32,display:"inline-block",animation:"spin 1.2s linear infinite"}}>🔍</div>
+              <p style={{fontSize:12,marginTop:10,color:"#475569"}}>Searching Adzuna for live jobs…</p>
+            </div>
+          )}
+          {sErr&&<div style={{background:"#2a0a0a",border:"1px solid #7f1d1d",borderRadius:8,padding:"10px 14px",color:"#f87171",fontSize:12,marginBottom:12}}>{sErr}</div>}
+
           {sr.length>0&&(
             <div>
-              <p style={{color:"#1e293b",fontSize:11,margin:"0 0 10px"}}>{sr.length} results — click + to add to tracker</p>
-              <div style={{display:"flex",flexDirection:"column",gap:8,maxHeight:420,overflowY:"auto"}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
+                <span style={{color:"#475569",fontSize:12}}>{sr.length} jobs found</span>
+                <span style={{color:"#334155",fontSize:11}}>Click + to add to tracker</span>
+              </div>
+              <div style={{display:"flex",flexDirection:"column",gap:8,maxHeight:460,overflowY:"auto"}}>
                 {sr.map((r,i)=>(
-                  <div key={i} style={{background:"#0a111e",border:"1px solid #1e293b",borderRadius:10,padding:12,display:"flex",justifyContent:"space-between",gap:10,alignItems:"flex-start"}}>
-                    <div style={{flex:1}}>
-                      <div style={{color:"#e2e8f0",fontWeight:600,fontSize:13}}>
-                        {r.applylink
-                          ? <a href={r.applylink} target="_blank" rel="noreferrer" style={{color:"#60a5fa",textDecoration:"none"}}>{r.title}</a>
-                          : r.title}
+                  <div key={i} style={{background:"#0a111e",border:"1px solid #1e293b",borderRadius:10,padding:14,display:"flex",justifyContent:"space-between",gap:12,alignItems:"flex-start",transition:"border-color .15s"}}
+                    onMouseEnter={e=>e.currentTarget.style.borderColor="#334155"}
+                    onMouseLeave={e=>e.currentTarget.style.borderColor="#1e293b"}>
+                    <div style={{flex:1,minWidth:0}}>
+                      <div style={{display:"flex",alignItems:"flex-start",justifyContent:"space-between",gap:8,marginBottom:4}}>
+                        <div style={{color:"#e2e8f0",fontWeight:700,fontSize:13,lineHeight:1.3}}>
+                          {r.applylink
+                            ? <a href={r.applylink} target="_blank" rel="noreferrer" style={{color:"#60a5fa",textDecoration:"none"}}>{r.title} ↗</a>
+                            : r.title}
+                        </div>
+                        {r.postedDate&&<span style={{color:"#334155",fontSize:10,whiteSpace:"nowrap",flexShrink:0}}>{r.postedDate}</span>}
                       </div>
-                      <div style={{color:"#60a5fa",fontSize:12,margin:"3px 0"}}>{r.company} · {r.location}</div>
-                      <div style={{color:"#334155",fontSize:11}}>{r.salary} · {r.type} · via {r.source}</div>
-                      {r.description&&<div style={{color:"#1e293b",fontSize:11,marginTop:3}}>{r.description}</div>}
+                      <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap",marginBottom:6}}>
+                        <span style={{color:"#64748b",fontSize:12,fontWeight:600}}>{r.company}</span>
+                        {r.location&&<span style={{color:"#334155",fontSize:11}}>📍 {r.location}</span>}
+                        <span style={{color:"#a78bfa",fontSize:11,fontWeight:600}}>{r.salary}</span>
+                        <span style={{background:"#0f172a",border:"1px solid #1e293b",color:"#64748b",padding:"1px 7px",borderRadius:999,fontSize:10}}>{r.type}</span>
+                        {r.category&&<span style={{color:"#334155",fontSize:10}}>🏷 {r.category}</span>}
+                      </div>
+                      {r.skills&&(
+                        <div style={{display:"flex",gap:4,flexWrap:"wrap",marginBottom:6}}>
+                          {r.skills.split(", ").map(sk=>(
+                            <span key={sk} style={{background:"rgba(99,102,241,0.12)",border:"1px solid rgba(99,102,241,0.25)",color:"#a5b4fc",padding:"1px 7px",borderRadius:999,fontSize:10,fontWeight:600}}>{sk}</span>
+                          ))}
+                        </div>
+                      )}
+                      {r.description&&<div style={{color:"#475569",fontSize:11,lineHeight:1.5,marginTop:2}}>{r.description}</div>}
                     </div>
-                    <Btn v="grn" onClick={()=>addFromSearch(r)} sx={{flexShrink:0,padding:"5px 10px",fontSize:11}}>+ Add</Btn>
+                    <div style={{display:"flex",flexDirection:"column",gap:6,flexShrink:0}}>
+                      <Btn v="grn" onClick={()=>addFromSearch(r)} sx={{padding:"5px 12px",fontSize:11}}>+ Add</Btn>
+                      {r.applylink&&(
+                        <a href={r.applylink} target="_blank" rel="noreferrer" style={{textDecoration:"none"}}>
+                          <Btn v="pri" sx={{padding:"5px 12px",fontSize:11,width:"100%",justifyContent:"center"}}>Apply ↗</Btn>
+                        </a>
+                      )}
+                    </div>
                   </div>
                 ))}
               </div>
 
-              {/* Load More button */}
               <button onClick={doSearchMore} disabled={sLoad} style={{
                 width:"100%",marginTop:10,
-                background:"rgba(6,182,212,0.08)",
-                border:"1px dashed rgba(6,182,212,0.3)",
+                background:"rgba(6,182,212,0.08)",border:"1px dashed rgba(6,182,212,0.3)",
                 color:"#06b6d4",borderRadius:10,padding:"10px",
-                cursor:sLoad?"not-allowed":"pointer",
-                fontFamily:"inherit",fontSize:13,fontWeight:600,
+                cursor:sLoad?"not-allowed":"pointer",fontFamily:"inherit",fontSize:13,fontWeight:600,
                 opacity:sLoad?0.5:1
               }}>
                 {sLoad ? "Loading…" : `⬇ Load More (page ${sPage + 1})`}
