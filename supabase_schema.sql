@@ -394,7 +394,11 @@ VALUES (
 )
 ON CONFLICT (id) DO NOTHING;
 
--- RLS for resume storage
+-- RLS for resume storage (drop first so schema is re-runnable)
+DROP POLICY IF EXISTS "resume_storage_select" ON storage.objects;
+DROP POLICY IF EXISTS "resume_storage_insert" ON storage.objects;
+DROP POLICY IF EXISTS "resume_storage_delete" ON storage.objects;
+
 CREATE POLICY "resume_storage_select"
   ON storage.objects FOR SELECT
   USING (bucket_id = 'resumes' AND auth.uid()::text = (storage.foldername(name))[1]);
