@@ -33,15 +33,12 @@ export default function Auth() {
     const { error } = await supabase.auth.signInWithOAuth({
       provider: 'google',
       options: {
-        // FIX: Added gmail.send so Google-login users can send email reports
-        // without needing a secondary GIS popup.
-        scopes: [
-          'https://www.googleapis.com/auth/gmail.readonly',
-          'https://www.googleapis.com/auth/gmail.send',
-          'https://www.googleapis.com/auth/calendar.events',
-          'https://www.googleapis.com/auth/drive.file',
-        ].join(' '),
-        queryParams: { access_type: 'offline', prompt: 'consent' },
+        // Request only non-sensitive scopes at login so Google doesn't show
+        // the "unverified app" scary warning on first sign-in.
+        // Sensitive scopes (gmail.send, drive.file, etc.) are requested
+        // on-demand via incremental authorization when each feature is used.
+        scopes: 'email profile',
+        queryParams: { access_type: 'offline', prompt: 'select_account' },
         redirectTo: window.location.origin,
       },
     });
@@ -96,7 +93,7 @@ export default function Auth() {
         </div>
 
         <div style={{ marginTop: 20, padding: '12px 14px', background: 'rgba(6,182,212,0.06)', border: '1px solid rgba(6,182,212,0.15)', borderRadius: 10, fontSize: 11, color: '#64748b', lineHeight: 1.6 }}>
-          ℹ️ <strong style={{ color: '#94a3b8' }}>Email/password users:</strong> Google features (Gmail scan, Drive, Calendar, email reports) require a Google Client ID in ⚙️ Settings. You'll see a one-time authorization popup per session.
+          ℹ️ Google sign-in uses basic profile only. Gmail scan, Drive, Calendar and email reports will ask for additional permissions the first time you use each feature — this keeps the sign-in screen clean and avoids Google's "unverified app" warning.
         </div>
       </div>
     </div>

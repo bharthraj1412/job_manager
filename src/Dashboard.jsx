@@ -102,15 +102,16 @@ async function loadGis() {
   });
 }
 
-// Scopes granted to session.provider_token via Auth.jsx Google OAuth login.
-// IMPORTANT: Only scopes listed here are safe to serve from provider_token.
-// If a user signed in BEFORE Auth.jsx was updated to include gmail.send,
-// their token won't have it — they fall through to GIS (safe, one-time popup).
+// Scopes granted to session.provider_token at login.
+// Auth.jsx now only requests 'email profile' at sign-in to avoid Google's
+// "unverified app" warning. ALL Google API features use incremental auth
+// via GIS popup (cached 55 min in sessionStorage) so provider_token is
+// never used for sensitive scopes.
 const OAUTH_LOGIN_SCOPES = new Set([
-  "https://www.googleapis.com/auth/gmail.readonly",
-  "https://www.googleapis.com/auth/gmail.send",   // Added in Auth.jsx fix
-  "https://www.googleapis.com/auth/calendar.events",
-  "https://www.googleapis.com/auth/drive.file",
+  // Only basic scopes — no sensitive scopes at login
+  "email",
+  "profile",
+  "openid",
 ]);
 
 // Stable cache key: sort scope words so order doesn't matter, then hash simply
@@ -123,17 +124,11 @@ function scopeCacheKey(scope) {
 }
 
 async function getGoogleToken(scope, session, clientId) {
-  // 1. Use session.provider_token ONLY when every requested scope was already
-  //    granted during the initial Google OAuth sign-in.  If ANY scope in the
-  //    request is NOT in OAUTH_LOGIN_SCOPES (e.g. gmail.send), we must use GIS
-  //    to get a fresh token with the correct permissions.
-  if (session?.provider_token) {
-    const requested = scope.trim().split(/\s+/);
-    const allCovered = requested.every(s => OAUTH_LOGIN_SCOPES.has(s));
-    if (allCovered) return session.provider_token;
-  }
+  // Auth.jsx now only requests email+profile at login, so provider_token
+  // never has sensitive scopes. All Google API calls go through GIS popup
+  // which shows a minimal, feature-specific consent screen (not scary).
 
-  // 2. Check sessionStorage for a previously obtained GIS token for this scope set
+  // 1. Check sessionStorage — cached from a previous GIS consent this session
   const cacheKey = scopeCacheKey(scope);
   try {
     const cached = sessionStorage.getItem(cacheKey);
@@ -143,8 +138,11 @@ async function getGoogleToken(scope, session, clientId) {
     }
   } catch { }
 
-  // 3. Request a new token via Google Identity Services popup
-  if (!clientId) throw new Error("Google Client ID not set — add it in ⚙️ Settings.");
+  // 2. Request via GIS — shows "JobBoard Pro wants to access your Gmail" etc.
+  //    This only pops up once per scope-set per session (55-min cache).
+  if (!clientId) throw new Error(
+    "Google Client ID not set — add it in ⚙️ Settings to use Google features."
+  );
   const gis = await loadGis();
   return new Promise((resolve, reject) => {
     const tc = gis.initTokenClient({
@@ -152,13 +150,16 @@ async function getGoogleToken(scope, session, clientId) {
       scope,
       callback: (r) => {
         if (r.error) return reject(new Error(r.error_description || r.error));
-        // Cache for 55 minutes — avoids re-prompting across features
         try {
-          sessionStorage.setItem(cacheKey, JSON.stringify({ token: r.access_token, exp: Date.now() + 3300000 }));
+          sessionStorage.setItem(cacheKey, JSON.stringify({
+            token: r.access_token,
+            exp: Date.now() + 3300000, // 55 min
+          }));
         } catch { }
         resolve(r.access_token);
       },
     });
+    // prompt:"" = no account-picker if already signed in; shows consent only
     tc.requestAccessToken({ prompt: "" });
   });
 }
@@ -1447,6 +1448,10 @@ Include: 6 technical Q&A (skills: ${job.skills || "general"}), 3 STAR behavioral
               <span style={{ background: "rgba(6,182,212,0.1)", border: "1px solid rgba(6,182,212,0.25)", color: "#06b6d4", padding: "2px 8px", borderRadius: 999, fontSize: 10 }}>Gmail API + AI</span>
             </div>
             {!clientId && <div style={{ background: "rgba(245,158,11,0.08)", border: "1px solid rgba(245,158,11,0.25)", borderRadius: 10, padding: "10px 14px", marginBottom: 14, fontSize: 12, color: "#fbbf24" }}>⚠️ Add your Google Client ID in ⚙️ Settings to use Gmail scanning.</div>}
+            {clientId && <div style={{ background: "rgba(99,102,241,0.06)", border: "1px solid rgba(99,102,241,0.18)", borderRadius: 10, padding: "10px 14px", marginBottom: 14, fontSize: 12, color: "#a5b4fc", display: "flex", gap: 8, alignItems: "flex-start" }}>
+              <span style={{ flexShrink: 0 }}>🔐</span>
+              <span>Clicking <strong>Scan Gmail</strong> will open a Google permission popup asking for <strong>Gmail read access</strong> for this app. You only see this once per session — subsequent scans reuse the cached token automatically.</span>
+            </div>}
             <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 14 }}>
               <input type="number" value={gmailDays} onChange={e => setGmailDays(e.target.value)} min="1" max="365" placeholder="Days" style={{ width: 90, background: "#070f1c", border: "1px solid #1e2d45", borderRadius: 8, padding: "10px 12px", color: "#e2e8f0", fontSize: 13, outline: "none", fontFamily: "inherit" }} />
               <input value={gmailExtra} onChange={e => setGmailExtra(e.target.value)} placeholder="Extra keywords (optional)…" style={{ flex: 1, minWidth: 200, background: "#070f1c", border: "1px solid #1e2d45", borderRadius: 8, padding: "10px 12px", color: "#e2e8f0", fontSize: 13, outline: "none", fontFamily: "inherit" }} />
@@ -1612,7 +1617,11 @@ After uploading/pasting, click Parse Resume to auto-fill your profile." rows={7}
                 </button>
               </div>
               <Btn v="pri" onClick={saveSettings} sx={{ width: "100%", justifyContent: "center", padding: "11px" }}>Save Settings</Btn>
-              <div style={{ marginTop: 14, background: "rgba(6,182,212,0.05)", border: "1px solid rgba(6,182,212,0.12)", borderRadius: 10, padding: "12px 14px", fontSize: 11, color: "#06b6d4", lineHeight: 1.7 }}>
+              <div style={{ marginTop: 14, background: "rgba(99,102,241,0.05)", border: "1px solid rgba(99,102,241,0.15)", borderRadius: 10, padding: "12px 14px", fontSize: 11, color: "#a5b4fc", lineHeight: 1.7 }}>
+                🔐 <strong>First-time permission flow:</strong><br />
+                When you click "Send Report Now", a Google popup asks for <strong>Gmail send + Drive access</strong>. After you approve once, it's cached for the session — no more popups. Each permission is scoped to exactly what's needed.
+              </div>
+              <div style={{ marginTop: 10, background: "rgba(6,182,212,0.05)", border: "1px solid rgba(6,182,212,0.12)", borderRadius: 10, padding: "12px 14px", fontSize: 11, color: "#06b6d4", lineHeight: 1.7 }}>
                 <strong>📋 What's included:</strong><br />Summary stats · Interviews & offers · Deadlines this week · Recent applications · Career tips<br />+ Beautiful Excel (5 sheets) saved to <strong>Drive → JobBoard Pro</strong> folder
               </div>
             </div>
@@ -1668,8 +1677,19 @@ After uploading/pasting, click Parse Resume to auto-fill your profile." rows={7}
             <F label="App Key"><Inp type="password" value={adzunaKey} onChange={e => setAdzunaKey(e.target.value)} placeholder="your_app_key" /></F>
           </div>
         </div>
-        <div style={{ background: "rgba(245,158,11,0.06)", border: "1px solid rgba(245,158,11,0.15)", borderRadius: 10, padding: "12px 16px", marginBottom: 14, fontSize: 12, color: "#fbbf24", lineHeight: 1.6 }}>
-          ℹ️ <strong>Email/Password users:</strong> Google features (Gmail scan, Drive, Calendar, email reports) require the Google Client ID. Set it above. You'll be prompted to authorize once per session — after that, no more popups!
+        <div style={{ background: "rgba(245,158,11,0.06)", border: "1px solid rgba(245,158,11,0.15)", borderRadius: 10, padding: "14px 16px", marginBottom: 14, fontSize: 12, color: "#fbbf24", lineHeight: 1.8 }}>
+          🔐 <strong>Google "Unverified App" warning?</strong><br />
+          <span style={{ color: "#94a3b8" }}>
+            Fix in 2 minutes: Go to{" "}
+            <a href="https://console.cloud.google.com/apis/credentials/consent" target="_blank" rel="noreferrer" style={{ color: "#60a5fa" }}>
+              Google Cloud Console → OAuth Consent Screen
+            </a>
+            {" "}→ scroll to <strong>"Test users"</strong> → click <strong>"+ ADD USERS"</strong> → add your Gmail address → Save.<br />
+            The warning disappears immediately for anyone you add (up to 100 emails).
+          </span>
+        </div>
+        <div style={{ background: "rgba(6,182,212,0.05)", border: "1px solid rgba(6,182,212,0.12)", borderRadius: 10, padding: "12px 16px", marginBottom: 14, fontSize: 12, color: "#64748b", lineHeight: 1.6 }}>
+          ℹ️ Google features require the Client ID above. Each feature asks for permission once per session — Gmail scan asks for Gmail access, Drive export asks for Drive access, etc. After approving, the token is cached and no more popups appear.
         </div>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", background: "#070f1c", border: "1px solid #1e2d45", borderRadius: 10, padding: "14px 16px", marginBottom: 16 }}>
           <div><div style={{ color: "#e2e8f0", fontWeight: 600, fontSize: 13 }}>Auto Daily Report</div><div style={{ color: "#475569", fontSize: 11, marginTop: 2 }}>Checked every minute at {reportTime}</div></div>
