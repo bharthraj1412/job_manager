@@ -41,7 +41,20 @@ const EXPERIENCE_LEVELS = [
 ];
 
 const NVIDIA_API_URL = '/api/ai';
-const NVIDIA_MODEL   = import.meta.env.VITE_AI_MODEL || 'deepseek-ai/deepseek-r1';
+const NVIDIA_MODEL   = import.meta.env.VITE_AI_MODEL || 'meta/llama-3.1-70b-instruct';
+
+const AVAILABLE_MODELS = [
+  { value: 'meta/llama-3.1-70b-instruct',          label: 'Llama 3.1 70B Instruct (recommended)' },
+  { value: 'meta/llama-3.3-70b-instruct',          label: 'Llama 3.3 70B Instruct' },
+  { value: 'meta/llama-3.1-8b-instruct',           label: 'Llama 3.1 8B (fast)' },
+  { value: 'mistralai/mistral-7b-instruct-v0.3',   label: 'Mistral 7B v0.3' },
+  { value: 'mistralai/mixtral-8x7b-instruct-v0.1', label: 'Mixtral 8x7B' },
+  { value: 'nvidia/llama-3.1-nemotron-70b-instruct', label: 'Nemotron 70B (NVIDIA)' },
+  { value: 'microsoft/phi-3-medium-128k-instruct', label: 'Phi-3 Medium 128K' },
+  { value: 'google/gemma-2-27b-it',                label: 'Gemma 2 27B' },
+  { value: 'qwen/qwen2.5-72b-instruct',            label: 'Qwen 2.5 72B' },
+  { value: 'custom',                                label: '✏️ Custom model string…' },
+];
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 const fmtDate = d => d ? new Date(d).toLocaleDateString("en-IN", { day: "numeric", month: "short" }) : "—";
@@ -97,18 +110,22 @@ ${prof.portfolio? `<p style="margin:0;color:#555;font-size:12px">${prof.portfoli
 </body></html>`;
 }
 
-async function callAI(prompt, sys = '') {
+async function callAI(prompt, sys = '', _unusedKey, modelOverride, proxyOverride) {
   const messages = [];
   if (sys) messages.push({ role: 'system', content: sys });
   messages.push({ role: 'user', content: prompt });
-  const r = await fetch(NVIDIA_API_URL, {
-    method: 'POST',
+
+  const model   = modelOverride   || NVIDIA_MODEL;
+  const apiUrl  = proxyOverride   || NVIDIA_API_URL;
+
+  const r = await fetch(apiUrl, {
+    method:  'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ model: NVIDIA_MODEL, messages, max_tokens: 4096 }),
+    body: JSON.stringify({ model, messages, max_tokens: 4096 }),
   });
   if (!r.ok) { const t = await r.text(); throw new Error(`API ${r.status}: ${t}`); }
   const d = await r.json();
-  if (d.error) throw new Error(d.error.message);
+  if (d.error) throw new Error(typeof d.error === 'string' ? d.error : (d.error.message || JSON.stringify(d.error)));
   return d.choices?.[0]?.message?.content || '';
 }
 
@@ -2558,7 +2575,21 @@ After uploading/pasting, click Parse Resume to auto-fill your profile." rows={7}
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
           <F label="NVIDIA/DeepSeek API Key"><Inp type="password" value={geminiKey} onChange={e => setGeminiKey(e.target.value)} placeholder="nvapi-…" /></F>
           <F label="API Proxy URL"><Inp value={proxyUrl} onChange={e => setProxyUrl(e.target.value)} placeholder="/api/ai" /></F>
-          <F label="AI Model"><Inp value={aiModel} onChange={e => setAiModel(e.target.value)} placeholder="deepseek-ai/deepseek-r1" /></F>
+          <F label="AI Model">
+            <select
+              value={AVAILABLE_MODELS.some(m => m.value === aiModel) ? aiModel : 'custom'}
+              onChange={e => { if (e.target.value !== 'custom') setAiModel(e.target.value); }}
+              style={{ width: '100%', background: '#070f1c', border: '1px solid #1e2d45', borderRadius: 8, padding: '9px 12px', color: '#e2e8f0', fontSize: 13, outline: 'none', fontFamily: 'inherit', cursor: 'pointer', marginBottom: 6 }}
+            >
+              {AVAILABLE_MODELS.map(m => <option key={m.value} value={m.value}>{m.label}</option>)}
+            </select>
+            {(!AVAILABLE_MODELS.some(m => m.value === aiModel && m.value !== 'custom') || aiModel === 'custom') && (
+              <Inp value={aiModel === 'custom' ? '' : aiModel} onChange={e => setAiModel(e.target.value)} placeholder="Enter exact model string e.g. meta/llama-3.1-70b-instruct" />
+            )}
+            <div style={{ fontSize: 10, color: '#475569', marginTop: 4 }}>
+              Current: <span style={{ color: '#a5b4fc', fontFamily: 'monospace' }}>{aiModel}</span>
+            </div>
+          </F>
           <F label="Google Client ID" hint="For Gmail, Drive, Calendar"><Inp value={clientId} onChange={e => setClientId(e.target.value)} placeholder="…apps.googleusercontent.com" /></F>
           <F label="Report Email"><Inp type="email" value={reportEmail} onChange={e => setReportEmail(e.target.value)} placeholder="daily@email.com" /></F>
           <F label="Daily Send Time"><Inp type="time" value={reportTime} onChange={e => setReportTime(e.target.value)} /></F>
