@@ -805,6 +805,77 @@ function generateBeautifulExcel(jobs) {
   return { wb, filename: `JobBoard_Pro_${date}.xlsx` };
 }
 
+// ── CSV Generators ────────────────────────────────────────────────────────────
+function generateProgressCSV(jobs) {
+  const esc = v => `"${String(v || "").replace(/"/g, '""')}"`;
+  const headers = ["#", "Job Title", "Company", "Location", "Type", "Salary", "Skills", "Source", "Status", "Priority", "Applied Date", "Deadline", "Notes"];
+  const rows = jobs.map((j, i) => [
+    i + 1, j.title, j.company, j.location || "", j.type || "", j.salary || "",
+    j.skills || "", j.source || "", j.status || "", j.priority || "",
+    j.applieddate || "", j.deadline || "", j.notes || ""
+  ].map(esc).join(","));
+
+  const stats = STATUS.reduce((a, s) => { a[s] = jobs.filter(j => j.status === s).length; return a }, {});
+  const totalActive = jobs.filter(j => !["Rejected", "Withdrawn"].includes(j.status)).length;
+  const responseRate = jobs.length ? Math.round(((stats.Interview || 0) + (stats.Offer || 0) + (stats.Rejected || 0)) / jobs.length * 100) : 0;
+
+  const summary = [
+    "", "",
+    `"📊 SUMMARY","",`,
+    `"Generated","${new Date().toLocaleDateString("en-IN")}"`,
+    `"Total Applications","${jobs.length}"`,
+    `"Active Applications","${totalActive}"`,
+    `"Response Rate","${responseRate}%"`,
+    "",
+    `"Status","Count","% of Total"`,
+    ...STATUS.map(s => `${esc(s)},"${stats[s] || 0}","${jobs.length ? Math.round((stats[s] || 0) / jobs.length * 100) : 0}%"`),
+    "",
+    `"Priority","Count"`,
+    ...["High", "Medium", "Low"].map(p => { const cnt = jobs.filter(j => j.priority === p).length; return `${esc(p)},"${cnt}"`; }),
+  ];
+
+  return [headers.map(h => esc(h)).join(","), ...rows, ...summary].join("\n");
+}
+
+function generateJobDigestCSV(results, keywords, searchDate) {
+  const esc = v => `"${String(v || "").replace(/"/g, '""')}"`;
+  const headers = ["#", "Job Title", "Company", "Location", "Type", "Salary", "Match %", "Skills Required", "Posted", "Apply Link", "Description"];
+  const sorted = [...results].sort((a, b) => (b.matchScore || 0) - (a.matchScore || 0));
+  const rows = sorted.map((r, i) => [
+    i + 1, r.title, r.company, r.location || "", r.type || "Full-time",
+    r.salary || "Not disclosed", r.matchScore ? r.matchScore + "%" : "—",
+    r.skills || "",
+    r.postedDaysAgo === 0 ? "Today" : r.postedDaysAgo === 1 ? "Yesterday" : r.postedDaysAgo != null ? r.postedDaysAgo + "d ago" : "—",
+    r.applylink || "", r.description || ""
+  ].map(esc).join(","));
+
+  const byType = results.reduce((a, r) => { a[r.type || "Unknown"] = (a[r.type || "Unknown"] || 0) + 1; return a }, {});
+  const summary = [
+    "", "",
+    `"📊 DIGEST SUMMARY"`,
+    `"Search Date","${searchDate || ""}"`,
+    `"Keywords","${keywords || ""}"`,
+    `"Total Results","${results.length}"`,
+    `"Profile Matches (>0%)","${sorted.filter(r => r.matchScore > 0).length}"`,
+    `"High Matches (50%+)","${sorted.filter(r => r.matchScore >= 50).length}"`,
+    `"Posted Today","${results.filter(r => (r.postedDaysAgo || 99) <= 1).length}"`,
+    "",
+    `"Job Type","Count"`,
+    ...Object.entries(byType).sort((a, b) => b[1] - a[1]).map(([t, c]) => `${esc(t)},"${c}"`),
+  ];
+
+  return [headers.map(h => esc(h)).join(","), ...rows, ...summary].join("\n");
+}
+
+function downloadCSVFile(content, filename) {
+  const blob = new Blob(["\uFEFF" + content], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click();
+  setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(url); }, 100);
+}
+
 // ── Atom Components ───────────────────────────────────────────────────────────
 const Btn = ({ children, onClick, v = "def", disabled, sx = {} }) => {
   const vs = {
@@ -1343,6 +1414,51 @@ ${resumeText.slice(0, 8000)}`,
     const { wb, filename } = generateBeautifulExcel(jobs);
     XLSX.writeFile(wb, filename);
     notify(`Downloaded ${filename} ✓`);
+  }
+
+  async function downloadProgressPDFLocal() {
+    const reportDate = new Date().toLocaleDateString("en-IN", { weekday: "long", day: "numeric", month: "long", year: "numeric" });
+    notify("Generating PDF…");
+    try {
+      const pdfDoc = await generateProgressPDF(jobs, reportDate, profile.full_name || session.user.email);
+      const date = new Date().toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" }).replace(/ /g, "-");
+      pdfDoc.save(`JobBoard_Report_${date}.pdf`);
+      notify("PDF downloaded ✓");
+    } catch (err) { notify("PDF error: " + err.message, "err"); }
+  }
+
+  function downloadProgressCSVLocal() {
+    const content = generateProgressCSV(jobs);
+    const date = new Date().toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" }).replace(/ /g, "-");
+    downloadCSVFile(content, `JobBoard_Report_${date}.csv`);
+    notify("CSV downloaded ✓");
+  }
+
+  function downloadLastDigestExcel() {
+    if (!lastDigestResults.length) return notify("Send a digest first to download", "err");
+    const searchDate = new Date().toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" }).replace(/ /g, "-");
+    const { wb, filename } = generateJobDigestExcel(lastDigestResults, searchDate, jobSearchKeywords || "jobs");
+    XLSX.writeFile(wb, filename);
+    notify(`Digest Excel downloaded ✓`);
+  }
+
+  async function downloadLastDigestPDF() {
+    if (!lastDigestResults.length) return notify("Send a digest first to download", "err");
+    notify("Generating Digest PDF…");
+    try {
+      const searchDate = new Date().toLocaleDateString("en-IN", { weekday: "long", day: "numeric", month: "long", year: "numeric" });
+      const pdfDoc = await generateJobDigestPDF(lastDigestResults, searchDate, profile.full_name || "", jobSearchKeywords || "jobs");
+      pdfDoc.save(`JobDigest_${todayStr()}.pdf`);
+      notify("Digest PDF downloaded ✓");
+    } catch (err) { notify("PDF error: " + err.message, "err"); }
+  }
+
+  function downloadLastDigestCSV() {
+    if (!lastDigestResults.length) return notify("Send a digest first to download", "err");
+    const searchDate = new Date().toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" });
+    const content = generateJobDigestCSV(lastDigestResults, jobSearchKeywords || "jobs", searchDate);
+    downloadCSVFile(content, `JobDigest_${todayStr()}.csv`);
+    notify("Digest CSV downloaded ✓");
   }
 
   function saveSettings() {
@@ -2121,7 +2237,11 @@ After uploading/pasting, click Parse Resume to auto-fill your profile." rows={7}
             </div>
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
               <Btn v="ghost" onClick={previewReport}>👁 Preview</Btn>
-              <Btn v="grn" onClick={downloadReport}>📥 Excel</Btn>
+              <div style={{ display: "flex", gap: 4, background: "rgba(34,197,94,0.06)", border: "1px solid rgba(34,197,94,0.2)", borderRadius: 10, padding: "4px" }}>
+                <Btn v="grn" onClick={downloadReport} sx={{ padding: "6px 12px", fontSize: 11 }}>📥 Excel</Btn>
+                <Btn v="grn" onClick={downloadProgressPDFLocal} sx={{ padding: "6px 12px", fontSize: 11 }}>📄 PDF</Btn>
+                <Btn v="grn" onClick={downloadProgressCSVLocal} sx={{ padding: "6px 12px", fontSize: 11 }}>📊 CSV</Btn>
+              </div>
               <Btn v="vio" onClick={() => handleSendReport()} disabled={reportSending}>{reportSending ? <><span style={{ animation: "spin 0.8s linear infinite", display: "inline-block" }}>◌</span> Sending…</> : "📊 Send Progress Now"}</Btn>
               <Btn v="cyn" onClick={() => handleSendJobDigest()} disabled={digestSending}>{digestSending ? <><span style={{ animation: "spin 0.8s linear infinite", display: "inline-block" }}>◌</span> Fetching jobs…</> : "🔍 Send Job Digest Now"}</Btn>
             </div>
@@ -2223,13 +2343,21 @@ After uploading/pasting, click Parse Resume to auto-fill your profile." rows={7}
                 {lastDigestResults.length > 0 && (
                   <div style={{ background: "#070f1c", border: "1px solid #1e2d45", borderRadius: 10, padding: "12px 14px", marginBottom: 12 }}>
                     <div style={{ color: "#475569", fontSize: 10, marginBottom: 8 }}>LAST DIGEST</div>
-                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 6 }}>
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 6, marginBottom: 10 }}>
                       {[["Total", lastDigestResults.length, "#67e8f9"], ["Matches", lastDigestResults.filter(r => r.matchScore > 0).length, "#86efac"], ["Today", lastDigestResults.filter(r => (r.postedDaysAgo || 99) <= 1).length, "#fde047"]].map(([l, v, c]) => (
                         <div key={l} style={{ textAlign: "center", background: "#06101e", borderRadius: 8, padding: "8px" }}>
                           <div style={{ color: c, fontSize: 16, fontWeight: 800, fontFamily: "'JetBrains Mono',monospace" }}>{v}</div>
                           <div style={{ color: "#334155", fontSize: 9, marginTop: 2, textTransform: "uppercase" }}>{l}</div>
                         </div>
                       ))}
+                    </div>
+                    <div style={{ borderTop: "1px solid #1e2d45", paddingTop: 10 }}>
+                      <div style={{ color: "#475569", fontSize: 9, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 7 }}>Download Last Digest</div>
+                      <div style={{ display: "flex", gap: 5 }}>
+                        <Btn v="cyn" onClick={downloadLastDigestExcel} sx={{ flex: 1, justifyContent: "center", padding: "7px 6px", fontSize: 10 }}>📥 Excel</Btn>
+                        <Btn v="cyn" onClick={downloadLastDigestPDF} sx={{ flex: 1, justifyContent: "center", padding: "7px 6px", fontSize: 10 }}>📄 PDF</Btn>
+                        <Btn v="cyn" onClick={downloadLastDigestCSV} sx={{ flex: 1, justifyContent: "center", padding: "7px 6px", fontSize: 10 }}>📊 CSV</Btn>
+                      </div>
                     </div>
                   </div>
                 )}
@@ -2304,9 +2432,13 @@ After uploading/pasting, click Parse Resume to auto-fill your profile." rows={7}
         <div style={{ background: "#040c18", borderRadius: 10, overflow: "hidden", maxHeight: 550, overflowY: "auto" }}>
           <iframe srcDoc={reportPreviewHTML} style={{ width: "100%", height: 600, border: "none", borderRadius: 10 }} title="Report Preview" />
         </div>
-        <div style={{ display: "flex", gap: 8, marginTop: 14 }}>
+        <div style={{ display: "flex", gap: 8, marginTop: 14, flexWrap: "wrap" }}>
           <Btn v="vio" onClick={() => handleSendReport()} disabled={reportSending}>{reportSending ? "Sending…" : "📧 Send This Report"}</Btn>
-          <Btn v="grn" onClick={downloadReport}>📥 Download Excel</Btn>
+          <div style={{ display: "flex", gap: 4, background: "rgba(34,197,94,0.06)", border: "1px solid rgba(34,197,94,0.2)", borderRadius: 10, padding: "4px" }}>
+            <Btn v="grn" onClick={downloadReport} sx={{ padding: "6px 12px", fontSize: 11 }}>📥 Excel</Btn>
+            <Btn v="grn" onClick={downloadProgressPDFLocal} sx={{ padding: "6px 12px", fontSize: 11 }}>📄 PDF</Btn>
+            <Btn v="grn" onClick={downloadProgressCSVLocal} sx={{ padding: "6px 12px", fontSize: 11 }}>📊 CSV</Btn>
+          </div>
         </div>
       </Modal>}
 
