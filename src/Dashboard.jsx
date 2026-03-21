@@ -2623,11 +2623,11 @@ Format: Professional letter. Opening hook, relevant experience paragraph, strong
     // Step 3: Use token to scan Gmail
     try {
       const QUERIES = [
-        { label: "Interview Scheduled", q: "subject:(interview scheduled OR interview invitation OR interview confirmed) newer_than:30d" },
-        { label: "Offer Received",      q: "subject:(offer letter OR job offer OR pleased to offer) newer_than:30d" },
-        { label: "Rejected",            q: "subject:(regret OR unfortunately OR not moving forward OR not selected) newer_than:30d" },
-        { label: "Applied",             q: "subject:(application received OR thank you for applying OR application submitted) newer_than:30d" },
-        { label: "Screening",           q: "subject:(screening call OR phone screen OR initial interview) newer_than:30d" },
+        { label: "Interview Scheduled", q: '(subject:"interview scheduled" OR subject:"interview invitation" OR subject:"interview confirmed") (from:careers OR from:jobs OR from:recruiting OR from:hr OR from:talent) newer_than:30d -subject:newsletter -subject:unsubscribe' },
+        { label: "Offer Received",      q: '(subject:"offer letter" OR subject:"job offer" OR subject:"pleased to offer") (from:careers OR from:jobs OR from:hr OR from:recruiting) newer_than:30d -subject:newsletter' },
+        { label: "Rejected",            q: '(subject:"unfortunately" OR subject:"not moving forward" OR subject:"not selected" OR subject:"other candidates") (from:careers OR from:jobs OR from:hr OR from:noreply) newer_than:30d -subject:newsletter -subject:unsubscribe' },
+        { label: "Applied",             q: '(subject:"application received" OR subject:"thank you for applying" OR subject:"application submitted") newer_than:30d -subject:newsletter -subject:unsubscribe -subject:"password reset" -subject:"verify your"' },
+        { label: "Screening",           q: '(subject:"phone screen" OR subject:"screening call" OR subject:"initial call") (from:careers OR from:jobs OR from:recruiting OR from:hr OR from:talent) newer_than:30d -subject:newsletter' },
       ];
 
       const results = await Promise.allSettled(
@@ -2734,7 +2734,7 @@ Emails:
 ${JSON.stringify(deduped.slice(0, 30))}`,
         "Return only a valid JSON array, no markdown, no extra text."
       );
-      const match = text.replace(/```json|```/g, "").trim().match(/[[sS]*]/);
+      const match = text.replace(/```json|```/g, "").trim().match(/\[[\s\S]*\]/);
       const emails = match ? JSON.parse(match[0]) : [];
 
       if (emails.length) {
@@ -2798,7 +2798,14 @@ ${JSON.stringify(deduped.slice(0, 30))}`,
   async function fetchAndParseEmails(token) {
     try {
       setGmailStatus({ msg: "Searching inbox…", type: "loading" });
-      let baseQ = `(subject:interview OR subject:offer OR subject:application OR subject:rejected OR subject:assessment) newer_than:${gmailDays}d`;
+      const _baseParts = [
+        '(subject:"interview" OR subject:"job offer" OR subject:"offer letter" OR',
+        'subject:"application received" OR subject:"thank you for applying" OR',
+        'subject:"application submitted" OR subject:"not moving forward" OR',
+        'subject:"unfortunately" OR subject:"screening call" OR subject:"phone screen")',
+        '-subject:newsletter -subject:unsubscribe -subject:"verify your email" -subject:"password reset" -subject:"your receipt" -subject:"your order"',
+      ];
+      let baseQ = _baseParts.join(" ") + " newer_than:" + gmailDays + "d";
       if (gmailExtra) baseQ += ` ${gmailExtra}`;
       const res = await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/messages?q=${encodeURIComponent(baseQ)}&maxResults=35`, { headers: { Authorization: `Bearer ${token}` } });
       const data = await res.json();
