@@ -2504,8 +2504,7 @@ Format: Professional letter. Opening hook, relevant experience paragraph, strong
     setAddingAccount(true);
     try {
       const gis = await loadGis();
-      // ALWAYS use prompt:"select_account" so the user can pick a DIFFERENT Google account.
-      // Do NOT use getGoogleToken() here — it caches by scope and always returns the same token.
+      // Force the account chooser every time so user can pick a DIFFERENT account
       const token = await new Promise((resolve, reject) => {
         const tc = gis.initTokenClient({
           client_id: clientId,
@@ -2521,17 +2520,18 @@ Format: Professional letter. Opening hook, relevant experience paragraph, strong
       const profileRes = await fetch("https://www.googleapis.com/oauth2/v1/userinfo?alt=json", {
         headers: { Authorization: `Bearer ${token}` }
       });
+      if (!profileRes.ok) throw new Error("Could not fetch account info");
       const profileData = await profileRes.json();
       const email = profileData.email;
       if (!email) throw new Error("Could not get account email");
 
       if (gmailAccounts.some(a => a.email === email)) {
-        notify(`${email} is already connected — pick a different account`, "err");
+        notify(`${email} is already connected. To add a different account, first sign in to another Google account in your browser, then click + Add Gmail Account.`, "err");
         setAddingAccount(false);
         return;
       }
 
-      // Cache token keyed by this specific account email (not by scope)
+      // Store token keyed by this account's email so scan can use it without a popup
       try {
         sessionStorage.setItem(`gtoken_acct_${email}`, JSON.stringify({
           token, exp: Date.now() + 3300000,
@@ -2547,7 +2547,7 @@ Format: Professional letter. Opening hook, relevant experience paragraph, strong
       const updated = [...gmailAccounts, newAccount];
       setGmailAccounts(updated);
       localStorage.setItem("gmailAccounts", JSON.stringify(updated));
-      notify(`✅ ${email} added!`);
+      notify(`✅ ${email} added! Token cached — scan will work without extra popups.`);
     } catch (err) {
       if (!err.message?.includes("popup_closed") && !err.message?.includes("access_denied")) {
         notify("Could not add account: " + err.message, "err");
@@ -2564,30 +2564,43 @@ Format: Professional letter. Opening hook, relevant experience paragraph, strong
     const updated = gmailAccounts.filter(a => a.id !== id);
     setGmailAccounts(updated);
     localStorage.setItem("gmailAccounts", JSON.stringify(updated));
+    setGmailScanProgress(p => {
+      const next = { ...p };
+      if (account) delete next[account.email];
+      return next;
+    });
     notify("Account removed");
   }
 
   async function scanSingleAccount(account) {
     setGmailScanProgress(p => ({ ...p, [account.email]: "scanning" }));
-    try {
-      // 1. Try the per-account token cached when we added this account
-      let token = null;
-      try {
-        const cached = sessionStorage.getItem(`gtoken_acct_${account.email}`);
-        if (cached) {
-          const { token: t, exp } = JSON.parse(cached);
-          if (t && Date.now() < exp) token = t;
-        }
-      } catch { }
+    let token = null;
 
-      // 2. If no cached token, request one via GIS with login_hint (no account picker needed)
-      if (!token) {
+    // Step 1: Try the cached token stored when this account was added
+    try {
+      const raw = sessionStorage.getItem(`gtoken_acct_${account.email}`);
+      if (raw) {
+        const { token: t, exp } = JSON.parse(raw);
+        if (t && Date.now() < exp) {
+          token = t;
+        } else {
+          sessionStorage.removeItem(`gtoken_acct_${account.email}`);
+        }
+      }
+    } catch { }
+
+    // Step 2: If no cached token, request a fresh one via GIS
+    // login_hint=email means Google will silently use that account if it has an active session
+    if (!token) {
+      try {
         const gis = await loadGis();
         token = await new Promise((resolve, reject) => {
+          const timer = setTimeout(() => reject(new Error("Token request timed out")), 30000);
           const tc = gis.initTokenClient({
             client_id: clientId,
             scope: "https://www.googleapis.com/auth/gmail.readonly",
             callback: (r) => {
+              clearTimeout(timer);
               if (r.error) return reject(new Error(r.error_description || r.error));
               try {
                 sessionStorage.setItem(`gtoken_acct_${account.email}`, JSON.stringify({
@@ -2597,17 +2610,24 @@ Format: Professional letter. Opening hook, relevant experience paragraph, strong
               resolve(r.access_token);
             },
           });
-          // login_hint tells Google to use this specific account silently
           tc.requestAccessToken({ prompt: "", login_hint: account.email });
         });
+      } catch (authErr) {
+        const isCancel = authErr.message?.includes("popup_closed") || authErr.message?.includes("access_denied") || authErr.message?.includes("timed out");
+        setGmailScanProgress(p => ({ ...p, [account.email]: isCancel ? "skipped" : "error" }));
+        console.warn(`Auth failed for ${account.email}:`, authErr.message);
+        return { account: account.email, found: 0, emails: [], error: authErr.message };
       }
+    }
 
+    // Step 3: Use token to scan Gmail
+    try {
       const QUERIES = [
         { label: "Interview Scheduled", q: "subject:(interview scheduled OR interview invitation OR interview confirmed) newer_than:30d" },
-        { label: "Offer Received",      q: "subject:(offer letter OR job offer OR we would like to offer OR pleased to offer) newer_than:30d" },
-        { label: "Rejected",            q: "subject:(regret OR unfortunately OR not moving forward OR not selected OR other candidates) newer_than:30d" },
-        { label: "Applied",             q: "subject:(application received OR thank you for applying OR we received your application OR application submitted) newer_than:30d" },
-        { label: "Screening",           q: "subject:(screening call OR phone screen OR initial interview OR recruiter would like) newer_than:30d" },
+        { label: "Offer Received",      q: "subject:(offer letter OR job offer OR pleased to offer) newer_than:30d" },
+        { label: "Rejected",            q: "subject:(regret OR unfortunately OR not moving forward OR not selected) newer_than:30d" },
+        { label: "Applied",             q: "subject:(application received OR thank you for applying OR application submitted) newer_than:30d" },
+        { label: "Screening",           q: "subject:(screening call OR phone screen OR initial interview) newer_than:30d" },
       ];
 
       const results = await Promise.allSettled(
@@ -2615,7 +2635,15 @@ Format: Professional letter. Opening hook, relevant experience paragraph, strong
           fetch(
             `https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=15&q=${encodeURIComponent(q)}`,
             { headers: { Authorization: `Bearer ${token}` } }
-          ).then(r => r.json()).then(d => ({ label, messages: d.messages || [] })).catch(() => ({ label, messages: [] }))
+          ).then(async r => {
+            if (r.status === 401) {
+              // Token expired mid-scan — clear cache
+              try { sessionStorage.removeItem(`gtoken_acct_${account.email}`); } catch { }
+              throw new Error("Token expired");
+            }
+            const d = await r.json();
+            return { label, messages: d.messages || [] };
+          }).catch(() => ({ label, messages: [] }))
         )
       );
 
@@ -2637,8 +2665,8 @@ Format: Professional letter. Opening hook, relevant experience paragraph, strong
             `https://gmail.googleapis.com/gmail/v1/users/me/messages/${msg.id}?format=metadata&metadataHeaders=Subject&metadataHeaders=From&metadataHeaders=Date`,
             { headers: { Authorization: `Bearer ${token}` } }
           ).then(r => r.json()).then(data => {
-            const headers = data.payload?.headers || [];
-            const get = n => headers.find(h => h.name === n)?.value || "";
+            const hdrs = data.payload?.headers || [];
+            const get = n => hdrs.find(h => h.name === n)?.value || "";
             return { id: msg.id, subject: get("Subject"), from: get("From"), date: get("Date"), snippet: data.snippet || "", category: msg.category, fromAccount: msg.fromAccount };
           }).catch(() => null)
         )
@@ -2647,38 +2675,48 @@ Format: Professional letter. Opening hook, relevant experience paragraph, strong
       const emails = details.filter(r => r.status === "fulfilled" && r.value).map(r => r.value);
       setGmailScanProgress(p => ({ ...p, [account.email]: emails.length > 0 ? "done" : "done_empty" }));
       return { account: account.email, found: emails.length, emails };
-    } catch (err) {
-      const isUserCancel = err.message?.includes("popup_closed") || err.message?.includes("access_denied");
-      setGmailScanProgress(p => ({ ...p, [account.email]: isUserCancel ? "skipped" : "error" }));
-      if (!isUserCancel) console.warn(`Gmail scan error for ${account.email}:`, err.message);
-      return { account: account.email, found: 0, emails: [], error: err.message };
+    } catch (scanErr) {
+      setGmailScanProgress(p => ({ ...p, [account.email]: "error" }));
+      console.error(`Scan error for ${account.email}:`, scanErr.message);
+      return { account: account.email, found: 0, emails: [], error: scanErr.message };
     }
   }
 
   async function startMultiAccountScan() {
     if (!clientId) return notify("Add Google Client ID in ⚙️ Settings", "err");
-    const accountsToScan = gmailAccounts.length > 0 ? gmailAccounts : null;
-    if (!accountsToScan) return startGmailScan();
+    if (gmailAccounts.length === 0) return startGmailScan(); // fallback to single scan
 
-    setGmailLoading(true); setGmailEmails([]); setGmailStats(null); setGmailScanProgress({});
-    setGmailStatus({ msg: `Scanning ${accountsToScan.length} account${accountsToScan.length > 1 ? "s" : ""}…`, type: "loading" });
+    setGmailLoading(true);
+    setGmailEmails([]);
+    setGmailStats(null);
+    setGmailScanProgress({});
+    setGmailStatus({ msg: `Scanning ${gmailAccounts.length} account${gmailAccounts.length > 1 ? "s" : ""}…`, type: "loading" });
 
-    // Scan accounts SEQUENTIALLY to avoid Google OAuth token conflicts
     const combined = [];
-    for (const acc of accountsToScan) {
+    let errorCount = 0;
+
+    // Scan accounts sequentially to avoid OAuth conflicts
+    for (const acc of gmailAccounts) {
       try {
         const result = await scanSingleAccount(acc);
         if (result.emails?.length) combined.push(...result.emails);
+        if (result.error) errorCount++;
       } catch (err) {
         console.warn(`Scan failed for ${acc.email}:`, err);
+        errorCount++;
       }
     }
 
     if (!combined.length) {
-      setGmailStatus({ msg: "No job-related emails found across all accounts.", type: "success" });
-      setGmailLoading(false); return;
+      const msg = errorCount > 0
+        ? `Scan had errors on ${errorCount} account(s). Try removing and re-adding them.`
+        : "No job-related emails found in the last 30 days.";
+      setGmailStatus({ msg, type: errorCount > 0 ? "error" : "success" });
+      setGmailLoading(false);
+      return;
     }
 
+    // Deduplicate
     const seen = new Set();
     const deduped = combined.filter(e => {
       const key = `${e.subject}|${e.from}`;
@@ -2687,28 +2725,63 @@ Format: Professional letter. Opening hook, relevant experience paragraph, strong
     });
 
     setGmailStatus({ msg: `Analyzing ${deduped.length} emails with AI…`, type: "loading" });
+
     try {
       const text = await AI(
-        `Analyze these job emails. Return ONLY a JSON array. Each object: {company, jobTitle, status(Applied|Screening|Interview Scheduled|Interview Done|Offer Received|Rejected|Pending), interviewDate, interviewTime, interviewType, sender, date, snippet, subject, fromAccount}.\n${JSON.stringify(deduped)}`,
-        "Return only valid JSON array."
+        `Analyze these job emails from Gmail. Return ONLY a JSON array. Each object must have these keys: company, jobTitle, status (one of: Applied|Screening|Interview Scheduled|Interview Done|Offer Received|Rejected|Pending), interviewDate, interviewTime, interviewType, sender, date, snippet, subject, fromAccount.
+
+Emails:
+${JSON.stringify(deduped.slice(0, 30))}`,
+        "Return only a valid JSON array, no markdown, no extra text."
       );
-      const match = text.match(/\[[\s\S]*\]/);
+      const match = text.replace(/```json|```/g, "").trim().match(/[[sS]*]/);
       const emails = match ? JSON.parse(match[0]) : [];
 
       if (emails.length) {
         setGmailEmails(emails);
+        const stats = {
+          total: emails.length,
+          applied: emails.filter(e => e.status === "Applied").length,
+          interview: emails.filter(e => e.status?.includes("Interview")).length,
+          offer: emails.filter(e => e.status?.includes("Offer")).length,
+          rejected: emails.filter(e => e.status === "Rejected").length,
+          pending: emails.filter(e => e.status === "Pending" || e.status === "Screening").length,
+        };
+        setGmailStats(stats);
         setGmailRows(emails.map((e, i) => ({
-          id: i + 1, date: e.date?.split("T")[0] || "", company: e.company || "",
-          jobTitle: e.jobTitle || "", status: e.status || "Applied",
-          interviewDate: e.interviewDate || "", interviewTime: e.interviewTime || "",
-          interviewType: e.interviewType || "", notes: e.snippet || "",
+          id: i + 1,
+          date: e.date?.split("T")[0] || "",
+          company: e.company || "",
+          jobTitle: e.jobTitle || "",
+          status: e.status || "Applied",
+          interviewDate: e.interviewDate || "",
+          interviewTime: e.interviewTime || "",
+          interviewType: e.interviewType || "",
+          notes: e.snippet || "",
           fromAccount: e.fromAccount || "",
         })));
-        setGmailStatus({ msg: `✓ Found ${emails.length} job emails!`, type: "success" });
+        setGmailStatus({
+          msg: `✓ Found ${emails.length} job email${emails.length !== 1 ? "s" : ""} across ${gmailAccounts.length} account${gmailAccounts.length > 1 ? "s" : ""}`,
+          type: "success"
+        });
       } else {
-        setGmailStatus({ msg: "✓ No structured matches found.", type: "success" });
+        setGmailStatus({ msg: "✓ Scan complete — no structured job emails found.", type: "success" });
       }
-    } catch (err) { setGmailStatus({ msg: "AI error: " + err.message, type: "error" }); }
+    } catch (aiErr) {
+      // AI failed but we still have raw emails — show them without AI parsing
+      setGmailEmails(deduped.map(e => ({
+        company: e.from?.match(/^"?([^"<@]+)/)?.[1]?.trim() || "Unknown",
+        jobTitle: e.subject || "Position",
+        status: e.category || "Applied",
+        sender: e.from,
+        date: e.date,
+        snippet: e.snippet,
+        subject: e.subject,
+        fromAccount: e.fromAccount,
+      })));
+      setGmailStatus({ msg: `✓ Found ${deduped.length} emails (AI analysis failed — showing raw results)`, type: "success" });
+    }
+
     setGmailLoading(false);
   }
 
@@ -3311,7 +3384,7 @@ Format: Professional letter. Opening hook, relevant experience paragraph, strong
                 {/* Info note */}
                 <div style={{ background: "rgba(99,102,241,0.05)", border: "1px solid rgba(99,102,241,0.15)", borderRadius: 10, padding: "10px 14px", fontSize: 11, color: "#a5b4fc", display: "flex", gap: 8, alignItems: "flex-start" }}>
                   <span style={{ flexShrink: 0 }}>🔐</span>
-                  <span>Each account requires a separate Google permission. When you click "Scan All", a popup will appear for each account to grant Gmail read access.</span>
+                  <span><strong>To add a 2nd Gmail:</strong> Open a new tab → google.com → sign in with the other account → return here → click + Add Gmail Account. Tokens are cached after adding so scans run without extra popups.</span>
                 </div>
               </div>
             )}
