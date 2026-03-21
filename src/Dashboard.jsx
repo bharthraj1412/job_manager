@@ -151,6 +151,127 @@ async function callAI(prompt, sys = '', apiKeyOverride, modelOverride, proxyOver
   return d.choices?.[0]?.message?.content || '';
 }
 
+function cleanPrepOutput(text) {
+  if (!text) return '';
+
+  const lines = text.split('
+');
+  const out = [];
+  let inTable = false;
+  let tableRows = [];
+  let colHeaders = [];
+
+  function flushTable() {
+    if (!tableRows.length) { inTable = false; return; }
+    // Print headers if we have them
+    if (colHeaders.length) {
+      out.push('  ' + colHeaders.join('   |   '));
+      out.push('  ' + colHeaders.map(h => '─'.repeat(Math.max(h.length, 4))).join('───────'));
+    }
+    tableRows.forEach(row => {
+      // row is array of cell strings
+      const cleaned = row.map(c => c.trim()).filter(Boolean);
+      if (cleaned.length) out.push('  ' + cleaned.join('   |   '));
+    });
+    out.push('');
+    tableRows = [];
+    colHeaders = [];
+    inTable = false;
+  }
+
+  lines.forEach(raw => {
+    const line = raw;
+
+    // Markdown table lines start with |
+    if (line.trim().startsWith('|')) {
+      const cells = line.split('|').map(c => c.trim()).filter(Boolean);
+
+      // Separator row like |---|---|
+      if (cells.every(c => /^[-:]+$/.test(c))) {
+        // skip separator, mark next rows as data
+        if (!inTable && colHeaders.length) inTable = true;
+        return;
+      }
+
+      if (!inTable && !colHeaders.length) {
+        // First real row = headers
+        // Strip leading numbering column (empty or "#")
+        const filtered = cells.filter(c => c && c !== '#');
+        colHeaders = filtered.map(c =>
+          c.replace(/**/g, '').replace(/`/g, '').trim()
+        );
+        inTable = true;
+        return;
+      }
+
+      // Data row — skip index column if it's just a number
+      const dataStart = /^d+$/.test(cells[0]) ? 1 : 0;
+      const row = cells.slice(dataStart).map(c =>
+        c.replace(/**/g, '').replace(/`/g, '')
+         .replace(/<brs*/?>/gi, ' ')
+         .replace(/&nbsp;/g, ' ')
+         .trim()
+      );
+      tableRows.push(row);
+      return;
+    }
+
+    // Non-table line — flush any open table first
+    if (inTable || tableRows.length) flushTable();
+
+    // Horizontal rules --- or ===
+    if (/^[-=]{3,}s*$/.test(line.trim())) {
+      out.push('');
+      return;
+    }
+
+    // ATX headings: ## Heading or ### Heading
+    const headingMatch = line.match(/^#{1,6}s+(.+)/);
+    if (headingMatch) {
+      out.push('');
+      out.push('▸ ' + headingMatch[1]
+        .replace(/**/g, '').replace(/`/g, '').replace(/*/g, '').trim());
+      out.push('');
+      return;
+    }
+
+    // Numbered section like "1️⃣ Section" or "1. Section" at line start
+    const emojiSection = line.match(/^([0-9]+[️⃣]*)s*(.*)/);
+
+    // Bold lines used as headers: **Some Title**
+    const boldHeader = line.trim().match(/^**(.+)**s*:?s*$/);
+    if (boldHeader) {
+      out.push('');
+      out.push('▸ ' + boldHeader[1].trim());
+      out.push('');
+      return;
+    }
+
+    // Inline cleanup: remove **, *, `backticks`, keep content
+    let cleaned = line
+      .replace(/**(.+?)**/g, '$1')
+      .replace(/*(.+?)*/g, '$1')
+      .replace(/`{1,3}([^`]+)`{1,3}/g, '$1')
+      .replace(/_{1,2}(.+?)_{1,2}/g, '$1')
+      .replace(/[(.+?)](.+?)/g, '$1')
+      .replace(/<brs*/?>/gi, '')
+      .replace(/&nbsp;/g, ' ');
+
+    out.push(cleaned);
+  });
+
+  // Flush any remaining table
+  if (inTable || tableRows.length) flushTable();
+
+  // Collapse 3+ blank lines to 2
+  const result = out.join('
+').replace(/
+{3,}/g, '
+
+').trim();
+  return result;
+}
+
 async function scrapeJobFromURL(url, aiFunc) {
   const readerUrl = `https://r.jina.ai/${url}`;
   let pageText = '';
@@ -2155,10 +2276,10 @@ Skills/Requirements: ${job.skills || "Not specified"}
 Job Notes: ${(job.notes || "").slice(0, 400)}
 
 Format each question clearly numbered. Add a brief tip for each.`,
-        "You are an expert interview coach. Provide practical, specific interview prep. Plain text only, no markdown.",
+        "You are an expert interview coach. Provide practical, specific interview prep. CRITICAL: Plain text only. No markdown tables (no | characters). No --- separators. No ** bold. No # headers. Use numbered lists and plain paragraphs only.",
         geminiKey, aiModel, proxyUrl
       );
-      setInterviewPrepResult(result.trim());
+      setInterviewPrepResult(cleanPrepOutput(result));
       notify("✓ Interview prep ready!");
     } catch (err) { notify("AI error: " + err.message, "err"); }
     setInterviewPrepLoading(false);
@@ -2250,9 +2371,9 @@ Return ONLY valid JSON:
       const t = await AI(
         `Interview prep guide for "${job.title}" at ${job.company}.${profileCtx}
 Include: 6 technical Q&A (skills: ${job.skills || "general"}), 3 STAR behavioral Qs with sample answers, 3 questions to ask interviewer, 5 key prep tasks.`,
-        "You are an expert career coach. Be specific and actionable."
+        "You are an expert career coach. Be specific and actionable. CRITICAL: Plain text only. No markdown tables (no | characters). No --- separators. No ** bold. No # headers. Use numbered lists and plain paragraphs only."
       );
-      setPrepOut(cleanAI(t));
+      setPrepOut(cleanPrepOutput(cleanAI(t)));
     } catch (err) { setPrepOut("Error: " + err.message); }
     setPrepLoad(false);
   }
@@ -3509,7 +3630,22 @@ After uploading/pasting, click Parse Resume to auto-fill your profile." rows={7}
       {/* Interview Prep */}
       {showPrep && <Modal title={`🎙 Interview Prep — ${showPrep.title}`} onClose={() => { setShowPrep(null); setPrepOut(""); }} wide>
         {prepLoad && <div style={{ textAlign: "center", padding: "40px", color: "#334155" }}><div style={{ fontSize: 32, display: "inline-block", animation: "spin 1.2s linear infinite", marginBottom: 12 }}>⚡</div><p style={{ fontSize: 12, color: "#475569" }}>Generating personalized prep guide…</p></div>}
-        {!prepLoad && prepOut && <div style={{ background: "#070f1c", border: "1px solid #1e2d45", borderRadius: 12, padding: 18, whiteSpace: "pre-wrap", lineHeight: 1.8, fontSize: 13, color: "#94a3b8", maxHeight: 520, overflowY: "auto" }}>{prepOut}</div>}
+        {!prepLoad && prepOut && (
+          <div style={{ background: "#070f1c", border: "1px solid #1e2d45", borderRadius: 12, padding: 18, maxHeight: 520, overflowY: "auto" }}>
+            {prepOut.split('\n').map((line, i) => {
+              if (!line.trim()) return <div key={i} style={{ height: 8 }} />;
+              if (line.startsWith('▸ ')) return <div key={i} style={{ color:'#a5b4fc', fontWeight:700, fontSize:13, marginTop:14, marginBottom:5, paddingBottom:5, borderBottom:'1px solid rgba(99,102,241,0.2)' }}>◆ {line.slice(2)}</div>;
+              if (line.includes('   |   ')) {
+                const cells = line.split('   |   ').map(c => c.trim()).filter(Boolean);
+                return <div key={i} style={{ display:'flex', gap:10, padding:'5px 8px', background:'rgba(255,255,255,0.025)', borderRadius:5, marginBottom:2, fontSize:12, flexWrap:'wrap' }}>{cells.map((c,ci) => <span key={ci} style={{ flex:ci===0?'0 0 auto':1, color:ci===0?'#60a5fa':'#94a3b8', minWidth:ci===0?20:80 }}>{c}</span>)}</div>;
+              }
+              if (line.trim().startsWith('• ') || line.trim().startsWith('- ')) return <div key={i} style={{ display:'flex', gap:8, padding:'2px 6px', fontSize:13, color:'#94a3b8' }}><span style={{ color:'#4f46e5' }}>•</span><span>{line.trim().slice(2)}</span></div>;
+              const nm = line.trim().match(/^([QqA]?d+[.):]?)s+(.+)/);
+              if (nm) return <div key={i} style={{ display:'flex', gap:10, padding:'4px 6px', fontSize:13 }}><span style={{ color:'#818cf8', fontWeight:700, minWidth:26, fontFamily:'monospace', fontSize:12 }}>{nm[1]}</span><span style={{ color:'#d1d5db' }}>{nm[2]}</span></div>;
+              return <div key={i} style={{ fontSize:13, color:'#94a3b8', lineHeight:1.65, padding:'2px 6px' }}>{line}</div>;
+            })}
+          </div>
+        )}
         {!prepOut && !prepLoad && <Btn v="pri" onClick={() => doPrep(showPrep)}>⚡ Generate Prep Guide</Btn>}
         {prepOut && !prepLoad && <div style={{ display: "flex", gap: 8, marginTop: 14 }}>
           <Btn v="pri" onClick={() => doPrep(showPrep)}>🔄 Regenerate</Btn>
@@ -3578,8 +3714,72 @@ After uploading/pasting, click Parse Resume to auto-fill your profile." rows={7}
             </div>
           ) : interviewPrepResult ? (
             <>
-              <div style={{ whiteSpace:'pre-wrap', color:'#e2e8f0', fontSize:13, lineHeight:1.7, maxHeight:500, overflowY:'auto', padding:'0 2px' }}>
-                {interviewPrepResult}
+              <div style={{ maxHeight:520, overflowY:'auto', padding:'0 4px' }}>
+                {interviewPrepResult.split('\n').map((line, i) => {
+                  const isEmpty = !line.trim();
+                  if (isEmpty) return <div key={i} style={{ height: 8 }} />;
+
+                  // Section header line (starts with ▸)
+                  if (line.startsWith('▸ ')) {
+                    return (
+                      <div key={i} style={{ color:'#a5b4fc', fontWeight:700, fontSize:13, marginTop:16, marginBottom:6, paddingBottom:6, borderBottom:'1px solid rgba(99,102,241,0.2)', display:'flex', alignItems:'center', gap:8 }}>
+                        <span style={{ color:'#4f46e5', fontSize:16 }}>◆</span>
+                        {line.slice(2)}
+                      </div>
+                    );
+                  }
+
+                  // Table row (lines starting with "  " and containing |)
+                  if (line.includes('   |   ')) {
+                    const isRule = line.trim().replace(/[─|\s]/g,'').length === 0;
+                    if (isRule) return <div key={i} style={{ borderBottom:'1px solid #1e2d45', margin:'2px 0 4px' }} />;
+                    const cells = line.split('   |   ').map(c => c.trim()).filter(Boolean);
+                    return (
+                      <div key={i} style={{ display:'flex', gap:12, padding:'6px 10px', background:'rgba(255,255,255,0.025)', borderRadius:6, marginBottom:3, fontSize:12, color:'#94a3b8', flexWrap:'wrap' }}>
+                        {cells.map((cell, ci) => (
+                          <span key={ci} style={{ flex: ci === 0 ? '0 0 auto' : 1, minWidth: ci === 0 ? 20 : 80, color: ci === 0 ? '#60a5fa' : '#94a3b8' }}>{cell}</span>
+                        ))}
+                      </div>
+                    );
+                  }
+
+                  // Bullet point
+                  if (line.trim().startsWith('• ') || line.trim().startsWith('- ')) {
+                    return (
+                      <div key={i} style={{ display:'flex', gap:8, padding:'3px 8px', fontSize:13, color:'#94a3b8', lineHeight:1.6 }}>
+                        <span style={{ color:'#4f46e5', flexShrink:0, marginTop:2 }}>•</span>
+                        <span>{line.trim().slice(2)}</span>
+                      </div>
+                    );
+                  }
+
+                  // Numbered item: "1. " or "Q1 " or "1 "
+                  const numMatch = line.trim().match(/^([QqA]?d+[.):]?)s+(.+)/);
+                  if (numMatch) {
+                    return (
+                      <div key={i} style={{ display:'flex', gap:10, padding:'5px 8px', fontSize:13, color:'#e2e8f0', lineHeight:1.65, marginBottom:2 }}>
+                        <span style={{ color:'#818cf8', fontWeight:700, flexShrink:0, minWidth:28, fontFamily:"'JetBrains Mono',monospace", fontSize:12 }}>{numMatch[1]}</span>
+                        <span style={{ color:'#d1d5db' }}>{numMatch[2]}</span>
+                      </div>
+                    );
+                  }
+
+                  // Tip / note line
+                  if (/^tip:|^note:|^hint:/i.test(line.trim())) {
+                    return (
+                      <div key={i} style={{ background:'rgba(99,102,241,0.06)', border:'1px solid rgba(99,102,241,0.15)', borderRadius:8, padding:'8px 12px', fontSize:12, color:'#a5b4fc', margin:'6px 0', lineHeight:1.6 }}>
+                        💡 {line.replace(/^tip:|^note:|^hint:/i, '').trim()}
+                      </div>
+                    );
+                  }
+
+                  // Plain text
+                  return (
+                    <div key={i} style={{ fontSize:13, color:'#94a3b8', lineHeight:1.65, padding:'2px 8px' }}>
+                      {line}
+                    </div>
+                  );
+                })}
               </div>
               <div style={{ display:'flex', gap:8, marginTop:16 }}>
                 <Btn v="vio" onClick={() => generateInterviewPrep(interviewPrepJob)}>🔄 Regenerate</Btn>
