@@ -1385,6 +1385,12 @@ export default function Dashboard({ session }) {
   const [salaryLoading, setSalaryLoading] = useState(false);
 
   const [sq, setSq] = useState(""); const [sr, setSr] = useState([]); const [sLoad, setSLoad] = useState(false); const [sErr, setSErr] = useState("");
+  // Advanced search state
+  const [aiRanking, setAiRanking] = useState(false);
+  const [aiExpandLoading, setAiExpandLoading] = useState(false);
+  const [searchInsights, setSearchInsights] = useState(null);  // { topSkills, salaryRange, topCompanies }
+  const [resultsFetched, setResultsFetched] = useState(0);     // total pages fetched so far
+  const [searchSessionId, setSearchSessionId] = useState(0);   // to cancel stale fetches
   const [sPage, setSPage] = useState(1); const [sTotalResults, setSTotalResults] = useState(0);
   const [sLocation, setSLocation] = useState(""); const [sJobType, setSJobType] = useState("all");
   const [sSalaryMin, setSSalaryMin] = useState(""); const [sCategory, setSCategory] = useState(""); const [sExperience, setSExperience] = useState("");
@@ -1878,7 +1884,7 @@ ${resumeText.slice(0, 8000)}`,
     const expLevel = EXPERIENCE_LEVELS.find(e => e.value === sExperience);
     let what = sq.trim();
     if (expLevel?.keywords) what = what ? `${what} ${expLevel.keywords}` : expLevel.keywords;
-    let url = `https://api.adzuna.com/v1/api/jobs/in/search/${page}?app_id=${adzunaId}&app_key=${adzunaKey}&results_per_page=50&content-type=application/json`;
+    let url = `https://api.adzuna.com/v1/api/jobs/in/search/${page}?app_id=${adzunaId}&app_key=${adzunaKey}&results_per_page=50&content-type=application/json&sort_by=date`;
     if (what) url += `&what=${encodeURIComponent(what)}`;
     const _city = cityOverride || sLocation.trim();
     if (_city) url += `&where=${encodeURIComponent(_city)}`;
@@ -2988,7 +2994,10 @@ ${JSON.stringify(deduped.slice(0, 30))}`,
             </Btn>
             <Btn v="vio" onClick={()=>{setShowURLScraper(true);setScrapeURL("");setScrapeResult(null);setScrapeError("");}}>🔗 Import URL</Btn>
             <Btn onClick={() => handleGmailMultiScan(false)} sx={{ background:'rgba(99,102,241,0.1)', border:'1px solid rgba(99,102,241,0.2)', color:'#a5b4fc', gap:6 }}>📧 Scan Gmail</Btn>
-            <Btn onClick={() => setShowSearch(true)} v="cyn">🔍 Find Jobs</Btn>
+            <Btn onClick={() => setShowSearch(true)} v="cyn" sx={{ position: "relative" }}>
+              🔍 Find Jobs
+              {sr.length > 0 && <span style={{ background: "#06b6d4", color: "#fff", borderRadius: 999, padding: "1px 5px", fontSize: 9, fontWeight: 700, marginLeft: 2 }}>{sr.length}</span>}
+            </Btn>
             <Btn onClick={() => setShowSettings(true)} v="ghost">⚙️</Btn>
             <Btn onClick={() => supabase.auth.signOut()} v="red">⏏️</Btn>
             <div style={{ width: 1, height: 20, background: "#1e2d45" }} />
@@ -4008,7 +4017,36 @@ After uploading/pasting, click Parse Resume to auto-fill your profile." rows={7}
           </select>
           <Btn v="ghost" onClick={saveSearch} sx={{ fontSize: 11 }}>🔖 Save</Btn>
         </div>
-        {sTotalResults > 0 && <div style={{ color: "#334155", fontSize: 12, marginBottom: 10 }}>{sr.length} of {sTotalResults.toLocaleString()} results</div>}
+        {/* Results count + insights */}
+        {sr.length > 0 && (
+          <div style={{ marginBottom: 12 }}>
+            <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", marginBottom: 8 }}>
+              <span style={{ color: "#64748b", fontSize: 12 }}>
+                Showing <strong style={{ color: "#67e8f9" }}>{sr.length}</strong> jobs
+                {sTotalResults > 0 && <span style={{ color: "#334155" }}> of ~{sTotalResults.toLocaleString()} total</span>}
+                {aiRanking && <span style={{ color: "#a78bfa", marginLeft: 6 }}> · AI ranking…</span>}
+              </span>
+              {searchInsights && (
+                <span style={{ color: "#475569", fontSize: 11 }}>
+                  🆕 <strong style={{ color: "#86efac" }}>{searchInsights.freshToday}</strong> today
+                  {searchInsights.withSalary > 0 && <> · 💰 <strong style={{ color: "#fde047" }}>{searchInsights.withSalary}</strong> with salary</>}
+                  {profile.skills && <> · ⚡ <strong style={{ color: "#60a5fa" }}>{sr.filter(r => (r.matchScore || 0) >= 50).length}</strong> high match</>}
+                </span>
+              )}
+            </div>
+            {searchInsights?.topSkills?.length > 0 && (
+              <div style={{ display: "flex", gap: 5, flexWrap: "wrap", alignItems: "center" }}>
+                <span style={{ color: "#334155", fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em", flexShrink: 0 }}>Top Skills:</span>
+                {searchInsights.topSkills.slice(0, 6).map(({ skill, count }) => (
+                  <button key={skill} onClick={() => setSq(sq ? `${sq} ${skill}` : skill)} title={`Click to add "${skill}" to search`}
+                    style={{ background: "rgba(99,102,241,0.08)", border: "1px solid rgba(99,102,241,0.2)", color: "#a5b4fc", padding: "2px 8px", borderRadius: 999, fontSize: 10, fontWeight: 600, cursor: "pointer", fontFamily: "inherit" }}>
+                    {skill} <span style={{ color: "#475569" }}>({count})</span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
         {sErr && <div style={{ background: "rgba(220,38,38,0.06)", border: "1px solid #7f1d1d", borderRadius: 10, padding: "12px 16px", color: "#f87171", fontSize: 12, marginBottom: 14 }}>⚠️ {sErr}</div>}
         {sr.length > 0 && <>
           <div style={{ display: "flex", flexDirection: "column", gap: 10, maxHeight: 500, overflowY: "auto", paddingRight: 4 }}>
