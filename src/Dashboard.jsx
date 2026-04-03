@@ -20,7 +20,7 @@ const GMAIL_STATUS_COLORS = {
   "Offer Received": { bg: "rgba(16,185,129,0.18)", fg: "#34d399", accent: "#10b981", lb: "#064e3b" },
   Rejected: { bg: "rgba(239,68,68,0.18)", fg: "#f87171", accent: "#ef4444", lb: "#7f1d1d" },
   Applied: { bg: "rgba(245,158,11,0.18)", fg: "#fbbf24", accent: "#f59e0b", lb: "#78350f" },
-  Screening: { bg: "rgba(139,92,246,0.18)", fg: "#a78bfa", accent: "#8b5cf6", lb: "#4c1d95" },
+  Screening: { bg: "rgba(139,92,246,0.18)", fg: "#4ade80", accent: "#8b5cf6", lb: "#065f46" },
   Pending: { bg: "rgba(148,163,184,0.12)", fg: "#94a3b8", accent: "#64748b", lb: "#1e293b" },
 };
 const TYPES = ["Full-time", "Part-time", "Internship", "Contract", "Freelance"];
@@ -36,7 +36,7 @@ const EXPERIENCE_LEVELS = [
   { value: "", label: "All Levels", color: "#94a3b8", keywords: "" },
   { value: "fresher", label: "Fresher / 0–1 yr", color: "#34d399", keywords: "fresher entry level graduate trainee" },
   { value: "junior", label: "Junior / 1–3 yrs", color: "#60a5fa", keywords: "junior associate 1 2 3 years" },
-  { value: "mid", label: "Mid / 3–5 yrs", color: "#a78bfa", keywords: "mid level 3 4 5 years" },
+  { value: "mid", label: "Mid / 3–5 yrs", color: "#4ade80", keywords: "mid level 3 4 5 years" },
   { value: "senior", label: "Senior / 5+ yrs", color: "#f59e0b", keywords: "senior lead principal 5 6 7 years" },
   { value: "manager", label: "Manager / Lead", color: "#f87171", keywords: "manager lead head director" },
 ];
@@ -600,7 +600,7 @@ async function generateProgressPDF(jobs, reportDate, profileName) {
 
 // ── Job Digest HTML email ──────────────────────────────────────────────────────
 function buildJobDigestHTML(results, searchDate, profileName, keywords) {
-  const topJobs = results.slice(0, 20);
+  const topJobs = results.slice(0, 40);
   const byScore = [...topJobs].sort((a, b) => (b.matchScore || 0) - (a.matchScore || 0));
 
   const jobRows = topJobs.map((r, i) => `
@@ -611,7 +611,7 @@ function buildJobDigestHTML(results, searchDate, profileName, keywords) {
       </td>
       <td style="padding:10px 12px;color:#64748b;">${r.company}</td>
       <td style="padding:10px 12px;color:#475569;font-size:12px;">${r.location || "—"}</td>
-      <td style="padding:10px 12px;color:#a78bfa;font-weight:600;">${r.salary || "—"}</td>
+      <td style="padding:10px 12px;color:#4ade80;font-weight:600;">${r.salary || "—"}</td>
       <td style="padding:10px 12px;color:#334155;font-size:11px;">${r.postedDaysAgo === 0 ? "Today" : r.postedDaysAgo === 1 ? "1d ago" : r.postedDaysAgo != null ? r.postedDaysAgo + "d ago" : "—"}</td>
       <td style="padding:10px 12px;">
         ${r.applylink ? `<a href="${r.applylink}" style="background:rgba(29,78,216,0.25);border:1px solid #1d4ed8;color:#93c5fd;padding:4px 10px;border-radius:6px;font-size:10px;text-decoration:none;font-weight:700;">Apply ↗</a>` : "—"}
@@ -654,7 +654,7 @@ function buildJobDigestHTML(results, searchDate, profileName, keywords) {
           <div style="font-size:10px;color:#475569;text-transform:uppercase;margin-top:3px;">Posted Today</div>
         </td>
         <td style="text-align:center;padding:16px 8px;">
-          <div style="font-size:28px;font-weight:800;color:#a78bfa;font-family:monospace;">${byScore[0]?.matchScore || 0}%</div>
+          <div style="font-size:28px;font-weight:800;color:#4ade80;font-family:monospace;">${byScore[0]?.matchScore || 0}%</div>
           <div style="font-size:10px;color:#475569;text-transform:uppercase;margin-top:3px;">Best Match</div>
         </td>
       </tr>
@@ -802,7 +802,7 @@ async function generateJobDigestPDF(results, searchDate, profileName, keywords) 
     startY: 68,
     head: [["#", "Role", "Company", "Location", "Salary", "Match", "Type", "Posted", "Skills"]],
     body: sorted.slice(0, 50).map((r, i) => [
-      i + 1, r.title?.slice(0, 38) || (r.title || ""), r.company?.slice(0, 20) || "", r.location?.slice(0, 18) || "—",
+      i + 1, r.title?.slice(0, 38) || (r.title || ""), r.company?.slice(0, 40) || "", r.location?.slice(0, 18) || "—",
       r.salary || "—", r.matchScore ? (r.matchScore + "%") : "—", r.type || "Full-time",
       r.postedDaysAgo === 0 ? "Today" : r.postedDaysAgo === 1 ? "1d ago" : r.postedDaysAgo != null ? r.postedDaysAgo + "d ago" : "—",
       (r.skills || "").slice(0, 30),
@@ -863,7 +863,7 @@ function buildReportHTML(jobs, reportDate, profileName) {
       <td style="padding:10px 14px;border-bottom:1px solid #1e293b;color:#e2e8f0;font-weight:600;">${j.title}</td>
       <td style="padding:10px 14px;border-bottom:1px solid #1e293b;color:#64748b;">${j.company}</td>
       <td style="padding:10px 14px;border-bottom:1px solid #1e293b;color:#475569;">${j.location || "—"}</td>
-      <td style="padding:10px 14px;border-bottom:1px solid #1e293b;color:#a78bfa;">${j.salary || "—"}</td>
+      <td style="padding:10px 14px;border-bottom:1px solid #1e293b;color:#4ade80;">${j.salary || "—"}</td>
     </tr>`).join("");
 
   const urgentRows = upcoming.map(j => {
@@ -1093,7 +1093,7 @@ const Btn = ({ children, onClick, v = "def", disabled, sx = {} }) => {
     cyn: { background: "linear-gradient(135deg,#164e63,#0e7490)", border: "1px solid rgba(6,182,212,0.2)", color: "#67e8f9" },
     red: { background: "rgba(220,38,38,0.08)", border: "1px solid #450a0a", color: "#f87171" },
     ghost: { background: "transparent", border: "1px solid #1e2d45", color: "#64748b" },
-    vio: { background: "linear-gradient(135deg,#4c1d95,#5b21b6)", border: "1px solid rgba(139,92,246,0.3)", color: "#c4b5fd" },
+    vio: { background: "linear-gradient(135deg,#065f46,#047857)", border: "1px solid rgba(34,197,94,0.3)", color: "#a7f3d0" },
   };
   return <button onClick={onClick} disabled={disabled} style={{ ...vs[v], borderRadius: 8, padding: "8px 14px", fontSize: 12, fontWeight: 600, cursor: disabled ? "not-allowed" : "pointer", opacity: disabled ? 0.5 : 1, display: "inline-flex", alignItems: "center", gap: 6, whiteSpace: "nowrap", fontFamily: "inherit", transition: "all .15s", ...sx }}>{children}</button>;
 };
@@ -1296,9 +1296,9 @@ export default function Dashboard({ session }) {
   const [adzunaId,  setAdzunaId]  = useState(() => localStorage.getItem('adzunaId')  || import.meta.env.VITE_ADZUNA_ID  || '');
   const [adzunaKey, setAdzunaKey] = useState(() => localStorage.getItem('adzunaKey') || import.meta.env.VITE_ADZUNA_KEY || '');
   // ── Notion state ─────────────────────────────────────────────────────
-  const [notionToken,   setNotionToken]   = useState(() => localStorage.getItem("notionToken") || "");
-  const [notionDbId,    setNotionDbId]    = useState(() => localStorage.getItem("notionDbId")  || "");
-  const [notionSyncing, setNotionSyncing] = useState(false);
+  const [sheetsSpreadsheetId,   setSheetsSpreadsheetId]   = useState(() => localStorage.getItem("sheetsSpreadsheetId") || "");
+  const [sheetsEnabled,    setSheetsEnabled]    = useState(() => localStorage.getItem("sheetsEnabled") === "true");
+  const [sheetsSyncing, setSheetsSyncing] = useState(false);
   const [reportEmail, setReportEmail] = useState(() => localStorage.getItem("reportEmail") || session?.user?.email || "");
   // Multi-email scanner recipients
   const [scannerEmails, setScannerEmails] = useState(() => {
@@ -1877,8 +1877,8 @@ ${resumeText.slice(0, 8000)}`,
     localStorage.setItem("jobSearchResultCount", jobSearchResultCount);
     localStorage.setItem("jobSearchFormat", jobSearchFormat);
     localStorage.setItem("reportFormat", reportFormat);
-    localStorage.setItem("notionToken",   notionToken);
-    localStorage.setItem("notionDbId",    notionDbId);
+    localStorage.setItem("sheetsSpreadsheetId",   sheetsSpreadsheetId);
+    localStorage.setItem("sheetsEnabled",    sheetsEnabled);
     // Clear ALL cached Google tokens so new clientId / scopes take effect
     try { Object.keys(sessionStorage).filter(k => k.startsWith("gtoken_")).forEach(k => sessionStorage.removeItem(k)); } catch { }
     notify("Settings saved ✓");
@@ -2105,12 +2105,12 @@ ${aiExtractNotes.slice(0,5000)}`,
   }
 
   // ── Notion Sync ──────────────────────────────────────────────────────────
-  async function syncToNotion(jobsToSync) {
-    if (!notionToken) return notify("Add your Notion Integration Token in ⚙️ Settings", "err");
-    if (!notionDbId)  return notify("Add your Notion Database ID in ⚙️ Settings", "err");
+  async function syncToGoogleSheets(jobsToSync) {
+    if (!clientId) return notify("Add Google Client ID in ⚙️ Settings", "err");
+    // sheetsEnabled check removed - Google Sheets needs no config in ⚙️ Settings", "err");
     const toSync = jobsToSync || jobs;
     if (!toSync.length) return notify("No jobs to sync", "err");
-    setNotionSyncing(true);
+    setSheetsSyncing(true);
     notify("Syncing " + toSync.length + " jobs to Notion…");
     try {
       const res = await fetch("/api/notion", {
@@ -2118,8 +2118,8 @@ ${aiExtractNotes.slice(0,5000)}`,
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           action: "sync_jobs",
-          token: notionToken,
-          database_id: notionDbId,
+          token: sheetsSpreadsheetId,
+          database_id: sheetsEnabled,
           jobs: toSync.map(j => ({
             id: j.id,
             title: j.title,
@@ -2144,7 +2144,7 @@ ${aiExtractNotes.slice(0,5000)}`,
     } catch (err) {
       notify("Notion error: " + err.message, "err");
     }
-    setNotionSyncing(false);
+    setSheetsSyncing(false);
   }
 
   // ── Gmail Multi-Category Scanner (5 categories simultaneously) ──────────
@@ -2163,18 +2163,20 @@ ${aiExtractNotes.slice(0,5000)}`,
 
       // 5 search queries run in parallel
       const GMAIL_QUERIES = [
-        { label: "Interview Scheduled",   q: "subject:(interview scheduled OR interview invitation OR interview confirmed) from:(careers OR jobs OR hiring OR hr OR noreply OR talent)" },
-        { label: "Offer Received",        q: "subject:(offer letter OR job offer OR we would like to offer OR pleased to offer) from:(careers OR jobs OR hiring OR hr)" },
-        { label: "Rejected",              q: "subject:(regret OR unfortunately OR not moving forward OR not selected OR other candidates) from:(careers OR jobs OR hiring OR hr OR noreply)" },
-        { label: "Applied",               q: "subject:(application received OR thank you for applying OR we received your application OR application submitted) from:(careers OR jobs OR noreply)" },
-        { label: "Screening",             q: "subject:(screening call OR phone screen OR initial interview OR recruiter would like) from:(careers OR jobs OR hiring OR recruiter OR talent)" },
+        { label: "Interview Scheduled",   q: `(subject:interview OR subject:"invite you" OR subject:"next round" OR subject:"schedule a call" OR subject:"interview confirmed") (${HIR} OR ${ATS}) ${EXCL}` },
+        { label: "Offer Received",        q: `(subject:"offer letter" OR subject:"job offer" OR subject:"pleased to offer" OR subject:"congratulations" OR subject:"selected for" OR subject:"we are excited") (${HIR} OR ${ATS}) ${EXCL}` },
+        { label: "Rejected",              q: `(subject:"unfortunately" OR subject:"not moving forward" OR subject:"not selected" OR subject:"other candidates" OR subject:"regret" OR subject:"will not be proceeding") (${HIR} OR ${ATS}) ${EXCL}` },
+        { label: "Applied",               q: `(subject:"application received" OR subject:"thank you for applying" OR subject:"application submitted" OR subject:"application confirmation" OR subject:"we received your" OR subject:"successfully applied" OR subject:"your application") (${HIR} OR ${ATS}) ${EXCL}` },
+        { label: "Screening",             q: `(subject:"phone screen" OR subject:"screening call" OR subject:"initial call" OR subject:"introductory call" OR subject:"recruiter" OR subject:"let's connect") (${HIR} OR ${ATS}) ${EXCL}` },
+        { label: "Assessment",            q: `(subject:"coding challenge" OR subject:"assessment" OR subject:"take-home" OR subject:"online test" OR subject:"technical test" OR subject:"hackerrank" OR subject:"codility") (${HIR} OR ${ATS}) ${EXCL}` },
+        { label: "Follow-up",             q: `(subject:"next steps" OR subject:"following up" OR subject:"update on your" OR subject:"shortlisted" OR subject:"moved forward") (${HIR} OR ${ATS}) ${EXCL}` },
       ];
 
       // Fetch all 5 in parallel
       const results = await Promise.allSettled(
         GMAIL_QUERIES.map(({ label, q }) =>
           fetch(
-            `https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=10&q=${encodeURIComponent(q + " newer_than:14d")}`,
+            `https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=50&q=${encodeURIComponent(q + " newer_than:60d")}`,
             { headers: { Authorization: `Bearer ${token}` } }
           )
             .then(r => r.json())
@@ -2191,13 +2193,13 @@ ${aiExtractNotes.slice(0,5000)}`,
       }
 
       if (!allMessages.length) {
-        if (!silent) notify("No new job-related emails found in the last 14 days.");
+        if (!silent) notify("No new job-related emails found in the last 60 days.");
         localStorage.setItem("lastGmailScan", todayStr());
         return;
       }
 
-      // Fetch email details (up to 15 emails)
-      const detailsToFetch = allMessages.slice(0, 15);
+      // Fetch email details (up to 40 emails)
+      const detailsToFetch = allMessages.slice(0, 40);
       const emailDetails = await Promise.allSettled(
         detailsToFetch.map(msg =>
           fetch(
@@ -2678,17 +2680,17 @@ Format: Professional letter. Opening hook, relevant experience paragraph, strong
     // Step 3: Use token to scan Gmail
     try {
       const QUERIES = [
-        { label: "Interview Scheduled", q: '(subject:"interview scheduled" OR subject:"interview invitation" OR subject:"interview confirmed") (from:careers OR from:jobs OR from:recruiting OR from:hr OR from:talent) newer_than:30d -subject:newsletter -subject:unsubscribe' },
-        { label: "Offer Received",      q: '(subject:"offer letter" OR subject:"job offer" OR subject:"pleased to offer") (from:careers OR from:jobs OR from:hr OR from:recruiting) newer_than:30d -subject:newsletter' },
-        { label: "Rejected",            q: '(subject:"unfortunately" OR subject:"not moving forward" OR subject:"not selected" OR subject:"other candidates") (from:careers OR from:jobs OR from:hr OR from:noreply) newer_than:30d -subject:newsletter -subject:unsubscribe' },
-        { label: "Applied",             q: '(subject:"application received" OR subject:"thank you for applying" OR subject:"application submitted") newer_than:30d -subject:newsletter -subject:unsubscribe -subject:"password reset" -subject:"verify your"' },
-        { label: "Screening",           q: '(subject:"phone screen" OR subject:"screening call" OR subject:"initial call") (from:careers OR from:jobs OR from:recruiting OR from:hr OR from:talent) newer_than:30d -subject:newsletter' },
+        { label: "Interview Scheduled", q: '(subject:interview OR subject:"invite you" OR subject:"next round" OR subject:"schedule a call" OR subject:"interview confirmed") (from:careers OR from:jobs OR from:recruiting OR from:hr OR from:talent OR from:greenhouse.io OR from:lever.co OR from:workday.com OR from:icims.com OR from:smartrecruiters.com) newer_than:60d -subject:newsletter -subject:unsubscribe' },
+        { label: "Offer Received",      q: '(subject:"offer letter" OR subject:"job offer" OR subject:"pleased to offer" OR subject:"congratulations" OR subject:"selected for" OR subject:"we are excited") (from:careers OR from:jobs OR from:hr OR from:recruiting OR from:greenhouse.io OR from:lever.co OR from:workday.com OR from:icims.com OR from:smartrecruiters.com) newer_than:60d -subject:newsletter' },
+        { label: "Rejected",            q: '(subject:"unfortunately" OR subject:"not moving forward" OR subject:"not selected" OR subject:"other candidates" OR subject:"regret" OR subject:"will not be proceeding" OR subject:"decided not to") (from:careers OR from:jobs OR from:hr OR from:noreply OR from:recruiting OR from:greenhouse.io OR from:lever.co OR from:workday.com OR from:icims.com OR from:smartrecruiters.com) newer_than:60d -subject:newsletter -subject:unsubscribe' },
+        { label: "Applied",             q: '(subject:"application received" OR subject:"thank you for applying" OR subject:"application submitted" OR subject:"application confirmation" OR subject:"we received your" OR subject:"successfully applied" OR subject:"your application") newer_than:60d -subject:newsletter -subject:unsubscribe -subject:"password reset" -subject:"verify your"' },
+        { label: "Screening",           q: '(subject:"phone screen" OR subject:"screening call" OR subject:"initial call" OR subject:"introductory call" OR subject:recruiter OR subject:"coding challenge" OR subject:assessment OR subject:"take-home" OR subject:"next steps" OR subject:"following up" OR subject:shortlisted) (from:careers OR from:jobs OR from:recruiting OR from:hr OR from:talent OR from:greenhouse.io OR from:lever.co OR from:workday.com OR from:icims.com OR from:smartrecruiters.com) newer_than:60d -subject:newsletter' },
       ];
 
       const results = await Promise.allSettled(
         QUERIES.map(({ label, q }) =>
           fetch(
-            `https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=15&q=${encodeURIComponent(q)}`,
+            `https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=50&q=${encodeURIComponent(q)}`,
             { headers: { Authorization: `Bearer ${token}` } }
           ).then(async r => {
             if (r.status === 401) {
@@ -2715,7 +2717,7 @@ Format: Professional letter. Opening hook, relevant experience paragraph, strong
       }
 
       const details = await Promise.allSettled(
-        allMessages.slice(0, 20).map(msg =>
+        allMessages.slice(0, 40).map(msg =>
           fetch(
             `https://gmail.googleapis.com/gmail/v1/users/me/messages/${msg.id}?format=metadata&metadataHeaders=Subject&metadataHeaders=From&metadataHeaders=Date`,
             { headers: { Authorization: `Bearer ${token}` } }
@@ -2863,12 +2865,12 @@ ${JSON.stringify(deduped.slice(0, 30))}`,
         '(subject:"interview" OR subject:"job offer" OR subject:"offer letter" OR',
         'subject:"application received" OR subject:"thank you for applying" OR',
         'subject:"application submitted" OR subject:"not moving forward" OR',
-        'subject:"unfortunately" OR subject:"screening call" OR subject:"phone screen")',
+        'subject:"unfortunately" OR subject:"not selected" OR subject:"regret" OR subject:"screening call" OR subject:"phone screen" OR subject:"coding challenge" OR subject:"assessment" OR subject:"take-home" OR subject:"next steps" OR subject:"congratulations" OR subject:"selected for" OR subject:"following up" OR subject:"shortlisted")',
         '-subject:newsletter -subject:unsubscribe -subject:"verify your email" -subject:"password reset" -subject:"your receipt" -subject:"your order"',
       ];
       let baseQ = _baseParts.join(" ") + " newer_than:" + gmailDays + "d";
       if (gmailExtra) baseQ += ` ${gmailExtra}`;
-      const res = await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/messages?q=${encodeURIComponent(baseQ)}&maxResults=35`, { headers: { Authorization: `Bearer ${token}` } });
+      const res = await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/messages?q=${encodeURIComponent(baseQ)}&maxResults=60`, { headers: { Authorization: `Bearer ${token}` } });
       const data = await res.json();
       if (!data.messages?.length) { setGmailStatus({ msg: "No job-related emails found.", type: "success" }); setGmailLoading(false); return; }
       setGmailStatus({ msg: `Reading ${data.messages.length} emails…`, type: "loading" });
@@ -3053,9 +3055,9 @@ ${JSON.stringify(deduped.slice(0, 30))}`,
               🔍 Find Jobs
               {sr.length > 0 && <span style={{ background: "#06b6d4", color: "#fff", borderRadius: 999, padding: "1px 5px", fontSize: 9, fontWeight: 700, marginLeft: 2 }}>{sr.length}</span>}
             </Btn>
-            {notionToken && notionDbId && (
-              <Btn onClick={() => syncToNotion()} disabled={notionSyncing} v="vio" sx={{ fontSize: 11, padding: "7px 12px" }}>
-                {notionSyncing ? <><span style={{ animation: "spin 0.8s linear infinite", display: "inline-block" }}>◌</span> Syncing…</> : "📝 Notion"}
+            {sheetsSpreadsheetId && sheetsEnabled && (
+              <Btn onClick={() => syncToGoogleSheets()} disabled={sheetsSyncing} v="vio" sx={{ fontSize: 11, padding: "7px 12px" }}>
+                {sheetsSyncing ? <><span style={{ animation: "spin 0.8s linear infinite", display: "inline-block" }}>◌</span> Syncing…</> : "📝 Notion"}
               </Btn>
             )}
             <Btn onClick={() => setShowSettings(true)} v="ghost">⚙️</Btn>
@@ -3074,7 +3076,7 @@ ${JSON.stringify(deduped.slice(0, 30))}`,
         <div style={{ maxWidth: 1480, margin: "0 auto", display: "flex", gap: 10, flexWrap: "wrap" }}>
           {overdue > 0 && <span style={{ background: "rgba(220,38,38,0.08)", border: "1px solid #7f1d1d", color: "#f87171", padding: "3px 12px", borderRadius: 999, fontSize: 11, fontWeight: 700 }}>🔴 {overdue} deadline{overdue > 1 ? "s" : ""} overdue</span>}
           {soonDue > 0 && <span style={{ background: "rgba(245,158,11,0.08)", border: "1px solid #78350f", color: "#fbbf24", padding: "3px 12px", borderRadius: 999, fontSize: 11, fontWeight: 700 }}>⏰ {soonDue} due this week</span>}
-          {needFollowup>0&&<span style={{background:"rgba(139,92,246,0.08)",border:"1px solid rgba(139,92,246,0.3)",color:"#a78bfa",padding:"3px 12px",borderRadius:999,fontSize:11,fontWeight:700}}>📨 {needFollowup} need follow-up (7+ days)</span>}
+          {needFollowup>0&&<span style={{background:"rgba(139,92,246,0.08)",border:"1px solid rgba(34,197,94,0.3)",color:"#4ade80",padding:"3px 12px",borderRadius:999,fontSize:11,fontWeight:700}}>📨 {needFollowup} need follow-up (7+ days)</span>}
           {autoReport && <span style={{ background: "rgba(99,102,241,0.08)", border: "1px solid rgba(99,102,241,0.2)", color: "#818cf8", padding: "3px 12px", borderRadius: 999, fontSize: 11, fontWeight: 700 }}>📧 Auto-report ON at {reportTime}</span>}
         </div>
       </div>}
@@ -3222,12 +3224,12 @@ ${JSON.stringify(deduped.slice(0, 30))}`,
                         {job.skills && <div style={{ color: "#334155", fontSize: 10 }}>{job.skills.split(",").slice(0, 3).join(" · ")}</div>}
                         {profile.skills && <MatchBadge score={calcMatchScore(job.skills, profile.skills)} />}
                         {job.status==="Applied"&&job.applieddate&&Math.abs(daysDiff(job.applieddate))>=7&&(
-                          <span style={{marginLeft:6,background:"rgba(139,92,246,0.15)",border:"1px solid rgba(139,92,246,0.3)",color:"#a78bfa",padding:"1px 6px",borderRadius:999,fontSize:9,fontWeight:700}}>📨 Follow up</span>
+                          <span style={{marginLeft:6,background:"rgba(139,92,246,0.15)",border:"1px solid rgba(34,197,94,0.3)",color:"#4ade80",padding:"1px 6px",borderRadius:999,fontSize:9,fontWeight:700}}>📨 Follow up</span>
                         )}
                       </td>
                       <td style={{ padding: "11px 13px", color: "#94a3b8", fontWeight: 500 }}>{job.company}</td>
                       <td style={{ padding: "11px 13px", color: "#475569", whiteSpace: "nowrap", fontSize: 11 }}>{job.location}</td>
-                      <td style={{ padding: "11px 13px", color: "#a78bfa", whiteSpace: "nowrap", fontWeight: 600 }}>{job.salary || "—"}</td>
+                      <td style={{ padding: "11px 13px", color: "#4ade80", whiteSpace: "nowrap", fontWeight: 600 }}>{job.salary || "—"}</td>
                       {/* Status with inline dropdown */}
                       <td style={{ padding: "11px 13px" }}>
                         <Badge s={job.status} />
@@ -3597,9 +3599,9 @@ ${JSON.stringify(deduped.slice(0, 30))}`,
           {/* Resume Parser */}
           <div style={{ background: "#06101e", border: "1px solid #1e2d45", borderRadius: 16, padding: 22, marginBottom: 20 }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14, flexWrap: "wrap", gap: 10 }}>
-              <div style={{ color: "#a78bfa", fontWeight: 700, fontSize: 13, display: "flex", alignItems: "center", gap: 8 }}>
+              <div style={{ color: "#4ade80", fontWeight: 700, fontSize: 13, display: "flex", alignItems: "center", gap: 8 }}>
                 📄 Resume Parser
-                <span style={{ background: "rgba(139,92,246,0.12)", border: "1px solid rgba(139,92,246,0.25)", color: "#a78bfa", padding: "2px 8px", borderRadius: 999, fontSize: 10 }}>AI-Powered + PDF.js</span>
+                <span style={{ background: "rgba(34,197,94,0.12)", border: "1px solid rgba(139,92,246,0.25)", color: "#4ade80", padding: "2px 8px", borderRadius: 999, fontSize: 10 }}>AI-Powered + PDF.js</span>
               </div>
               <div style={{ display: "flex", gap: 8 }}>
                 <Btn v="ghost" onClick={() => resumeRef.current.click()} sx={{ fontSize: 11 }}>📎 Upload PDF/TXT</Btn>
@@ -3610,7 +3612,7 @@ ${JSON.stringify(deduped.slice(0, 30))}`,
 
 PDF.js is used for accurate text extraction from PDF files.
 After uploading/pasting, click Parse Resume to auto-fill your profile." rows={7} sx={{ fontFamily: "'JetBrains Mono',monospace", fontSize: 12 }} />
-            <div style={{ marginTop: 10, background: "rgba(139,92,246,0.06)", border: "1px solid rgba(139,92,246,0.15)", borderRadius: 8, padding: "10px 14px", fontSize: 11, color: "#8b5cf6" }}>
+            <div style={{ marginTop: 10, background: "rgba(34,197,94,0.06)", border: "1px solid rgba(139,92,246,0.15)", borderRadius: 8, padding: "10px 14px", fontSize: 11, color: "#8b5cf6" }}>
               💡 Supports text-based PDFs, TXT files, and pasted text. Your skills are used for <strong>job match scoring</strong> and personalized AI responses.
             </div>
           </div>
@@ -3626,7 +3628,7 @@ After uploading/pasting, click Parse Resume to auto-fill your profile." rows={7}
               <F label="GitHub"><Inp value={profile.github || ""} onChange={e => setProfile(p => ({ ...p, github: e.target.value }))} placeholder="github.com/…" /></F>
             </div>
             <div style={{ background: "#06101e", border: "1px solid #1e2d45", borderRadius: 14, padding: 18 }}>
-              <div style={{ color: "#a78bfa", fontSize: 11, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 14 }}>Professional</div>
+              <div style={{ color: "#4ade80", fontSize: 11, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 14 }}>Professional</div>
               <F label="Headline"><Inp value={profile.headline || ""} onChange={e => setProfile(p => ({ ...p, headline: e.target.value }))} placeholder="e.g. Software Engineer | React & Python" /></F>
               <F label="Summary"><Txt value={profile.summary || ""} onChange={e => setProfile(p => ({ ...p, summary: e.target.value }))} placeholder="2-3 sentence professional summary…" rows={3} /></F>
               <F label="Skills" hint={profile.skills ? `${profile.skills.split(",").filter(s => s.trim()).length} skills` : ""}><Txt value={profile.skills || ""} onChange={e => setProfile(p => ({ ...p, skills: e.target.value }))} placeholder="React, Python, SQL, Node.js…" rows={3} /></F>
@@ -3765,7 +3767,7 @@ After uploading/pasting, click Parse Resume to auto-fill your profile." rows={7}
                 </div>
               </div>
               <div style={{ background: "#06101e", border: "1px solid #1e2d45", borderRadius: 16, padding: 22, flex: 1 }}>
-                <div style={{ color: "#a78bfa", fontSize: 11, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 12 }}>📋 Progress History</div>
+                <div style={{ color: "#4ade80", fontSize: 11, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 12 }}>📋 Progress History</div>
                 <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 12 }}>
                   {[["Sent", reportLog.length, "#60a5fa"], ["Jobs", jobs.length, "#86efac"], ["Interviews", stats.Interview || 0, "#22c55e"], ["Offers", stats.Offer || 0, "#fde047"]].map(([l, v, c]) => (
                     <div key={l} style={{ background: "#070f1c", border: "1px solid #1e2d45", borderRadius: 10, padding: "10px", textAlign: "center" }}>
@@ -3945,36 +3947,42 @@ After uploading/pasting, click Parse Resume to auto-fill your profile." rows={7}
             <F label="App Key"><Inp type="password" value={adzunaKey} onChange={e => setAdzunaKey(e.target.value)} placeholder="your_app_key" /></F>
           </div>
         </div>
-        {/* ── Notion Sync Settings ── */}
-        <div style={{ background: "rgba(139,92,246,0.06)", border: "1px solid rgba(139,92,246,0.22)", borderRadius: 10, padding: 16, margin: "14px 0" }}>
-          <div style={{ color: "#a78bfa", fontSize: 11, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 12, display: "flex", alignItems: "center", gap: 8 }}>
-            📝 Notion Sync
-            <span style={{ background: "rgba(139,92,246,0.12)", color: "#a78bfa", padding: "1px 8px", borderRadius: 999, fontSize: 9, fontWeight: 700 }}>Export jobs to Notion</span>
+        {/* ── Google Sheets Sync Settings ── */}
+        <div style={{ background: "rgba(34,197,94,0.06)", border: "1px solid rgba(34,197,94,0.22)", borderRadius: 10, padding: 16, margin: "14px 0" }}>
+          <div style={{ color: "#4ade80", fontSize: 11, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 12, display: "flex", alignItems: "center", gap: 8 }}>
+            📊 Google Sheets Sync
+            <span style={{ background: "rgba(34,197,94,0.12)", color: "#4ade80", padding: "1px 8px", borderRadius: 999, fontSize: 9, fontWeight: 700 }}>Free • No setup needed</span>
           </div>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 12 }}>
-            <F label="Integration Token" hint="notion.so/my-integrations">
-              <Inp type="password" value={notionToken} onChange={e => setNotionToken(e.target.value)} placeholder="secret_…" />
-            </F>
-            <F label="Database ID" hint="32 chars from Notion DB URL">
-              <Inp value={notionDbId} onChange={e => setNotionDbId(e.target.value)} placeholder="xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" />
-            </F>
+          <div style={{ fontSize: 12, color: "#94a3b8", marginBottom: 14, lineHeight: 1.7 }}>
+            Sync all your jobs to a Google Spreadsheet with one click. Uses your existing Google account — no API keys or tokens needed.
+            {sheetsSpreadsheetId && (
+              <span style={{ display: "block", marginTop: 8 }}>
+                <span style={{ color: "#4ade80", fontWeight: 700 }}>✓ Connected</span>
+                {" — "}
+                <a href={`https://docs.google.com/spreadsheets/d/${sheetsSpreadsheetId}`} target="_blank" rel="noopener noreferrer" style={{ color: "#60a5fa", textDecoration: "underline" }}>Open Spreadsheet ↗</a>
+              </span>
+            )}
           </div>
-          {notionToken && notionDbId && (
+          <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
             <button
-              onClick={() => syncToNotion()}
-              disabled={notionSyncing}
-              style={{ background: "linear-gradient(135deg,#4c1d95,#5b21b6)", border: "1px solid rgba(139,92,246,0.3)", color: "#c4b5fd", borderRadius: 8, padding: "9px 20px", cursor: notionSyncing ? "not-allowed" : "pointer", fontFamily: "inherit", fontSize: 12, fontWeight: 700, display: "flex", alignItems: "center", gap: 8 }}>
-              {notionSyncing
+              onClick={() => syncToGoogleSheets()}
+              disabled={sheetsSyncing || !clientId}
+              style={{ background: "linear-gradient(135deg,#065f46,#047857)", border: "1px solid rgba(34,197,94,0.3)", color: "#a7f3d0", borderRadius: 8, padding: "9px 20px", cursor: sheetsSyncing ? "not-allowed" : "pointer", fontFamily: "inherit", fontSize: 12, fontWeight: 700, display: "flex", alignItems: "center", gap: 8 }}>
+              {sheetsSyncing
                 ? <><span style={{ animation: "spin 0.8s linear infinite", display: "inline-block" }}>◌</span> Syncing…</>
-                : "📝 Sync All " + jobs.length + " Jobs to Notion Now"}
+                : "📊 Sync All " + jobs.length + " Jobs to Google Sheets"}
             </button>
-          )}
-          <div style={{ fontSize: 10, color: "#475569", marginTop: 10, lineHeight: 1.8 }}>
-            <strong style={{ color: "#6b7280" }}>Setup (3 steps):</strong><br/>
-            1. notion.so/my-integrations → New integration → copy <em>Internal Integration Token</em><br/>
-            2. In Notion: create a DB with columns → Name, Company, Status, Location, Salary, Priority, Skills, Apply Link, Applied Date, Deadline, Source<br/>
-            3. Open that DB → ··· menu → <em>Add connections</em> → pick your integration → copy the 32-char DB ID from the URL
+            {sheetsSpreadsheetId && (
+              <button
+                onClick={() => { setSheetsSpreadsheetId(""); localStorage.removeItem("sheetsSpreadsheetId"); notify("Spreadsheet link cleared — next sync will create a new one"); }}
+                style={{ background: "transparent", border: "1px solid #1e2d45", color: "#64748b", borderRadius: 8, padding: "8px 14px", cursor: "pointer", fontFamily: "inherit", fontSize: 11 }}>
+                🔄 New Sheet
+              </button>
+            )}
           </div>
+          {!clientId && (
+            <div style={{ fontSize: 10, color: "#f59e0b", marginTop: 10 }}>⚠️ Add your Google Client ID above first to enable Sheets sync.</div>
+          )}
         </div>
 
         <div style={{ background: "rgba(245,158,11,0.06)", border: "1px solid rgba(245,158,11,0.15)", borderRadius: 10, padding: "14px 16px", marginBottom: 14, fontSize: 12, color: "#fbbf24", lineHeight: 1.8 }}>
@@ -4018,10 +4026,10 @@ After uploading/pasting, click Parse Resume to auto-fill your profile." rows={7}
       {/* Add / Edit */}
       {showAdd && <Modal title={editId ? "✏️ Edit Job" : "＋ Add New Job"} onClose={() => setShowAdd(false)}>
         {!editId && (
-          <div style={{background:"rgba(139,92,246,0.06)",border:"1px solid rgba(139,92,246,0.2)",borderRadius:12,padding:16,marginBottom:16}}>
-            <div style={{color:"#a78bfa",fontSize:12,fontWeight:700,marginBottom:10,display:"flex",alignItems:"center",gap:8}}>
+          <div style={{background:"rgba(34,197,94,0.06)",border:"1px solid rgba(139,92,246,0.2)",borderRadius:12,padding:16,marginBottom:16}}>
+            <div style={{color:"#4ade80",fontSize:12,fontWeight:700,marginBottom:10,display:"flex",alignItems:"center",gap:8}}>
               🤖 AI Extract from Job Description
-              <span style={{background:"rgba(139,92,246,0.12)",border:"1px solid rgba(139,92,246,0.25)",color:"#a78bfa",padding:"1px 8px",borderRadius:999,fontSize:9}}>Auto-fill form</span>
+              <span style={{background:"rgba(34,197,94,0.12)",border:"1px solid rgba(139,92,246,0.25)",color:"#4ade80",padding:"1px 8px",borderRadius:999,fontSize:9}}>Auto-fill form</span>
             </div>
             <Txt value={typeof aiExtractNotes !== 'undefined' ? aiExtractNotes : ''} onChange={e=>setAiExtractNotes && setAiExtractNotes(e.target.value)}
               placeholder="Paste any job description here — AI extracts title, company, location, skills, salary, deadline and fills the form automatically…" rows={4}/>
@@ -4116,7 +4124,7 @@ After uploading/pasting, click Parse Resume to auto-fill your profile." rows={7}
               <span style={{ color: "#64748b", fontSize: 12 }}>
                 Showing <strong style={{ color: "#67e8f9" }}>{sr.length}</strong> jobs
                 {sTotalResults > 0 && <span style={{ color: "#334155" }}> of ~{sTotalResults.toLocaleString()} total</span>}
-                {aiRanking && <span style={{ color: "#a78bfa", marginLeft: 6 }}> · AI ranking…</span>}
+                {aiRanking && <span style={{ color: "#4ade80", marginLeft: 6 }}> · AI ranking…</span>}
               </span>
               {searchInsights && (
                 <span style={{ color: "#475569", fontSize: 11 }}>
@@ -4152,7 +4160,7 @@ After uploading/pasting, click Parse Resume to auto-fill your profile." rows={7}
                     <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 6 }}>
                       <span style={{ color: "#64748b", fontSize: 12, fontWeight: 600 }}>{r.company}</span>
                       {r.location && <span style={{ color: "#475569", fontSize: 11 }}>📍 {r.location}</span>}
-                      {r.salary && <span style={{ background: "rgba(167,139,250,0.1)", border: "1px solid rgba(167,139,250,0.2)", color: "#a78bfa", padding: "2px 9px", borderRadius: 999, fontSize: 11, fontWeight: 700 }}>{r.salary}</span>}
+                      {r.salary && <span style={{ background: "rgba(167,139,250,0.1)", border: "1px solid rgba(167,139,250,0.2)", color: "#4ade80", padding: "2px 9px", borderRadius: 999, fontSize: 11, fontWeight: 700 }}>{r.salary}</span>}
                       {r.matchScore > 0 && <MatchBadge score={r.matchScore} />}
                       {r.postedDaysAgo !== null && <span style={{ color: r.postedDaysAgo <= 3 ? "#86efac" : "#475569", fontSize: 10 }}>{r.postedDaysAgo === 0 ? "Today" : `${r.postedDaysAgo}d ago`}</span>}
                     </div>
@@ -4242,7 +4250,7 @@ After uploading/pasting, click Parse Resume to auto-fill your profile." rows={7}
         <p style={{color:"#94a3b8",fontSize:13,lineHeight:1.7,marginBottom:14}}>
           Paste any job posting URL — LinkedIn, Naukri, Indeed, company career pages. AI extracts all details.
         </p>
-        <div style={{background:"rgba(139,92,246,0.06)",border:"1px solid rgba(139,92,246,0.18)",borderRadius:10,padding:"10px 14px",marginBottom:16,fontSize:11,color:"#a78bfa"}}>
+        <div style={{background:"rgba(34,197,94,0.06)",border:"1px solid rgba(139,92,246,0.18)",borderRadius:10,padding:"10px 14px",marginBottom:16,fontSize:11,color:"#4ade80"}}>
           ✨ Supported: LinkedIn Jobs · Naukri · Indeed · Internshala · Glassdoor · Any public job URL
         </div>
         <F label="Job Posting URL">
@@ -4304,7 +4312,7 @@ After uploading/pasting, click Parse Resume to auto-fill your profile." rows={7}
                           <span style={{ background:'rgba(99,102,241,0.15)', border:'1px solid rgba(99,102,241,0.35)', color:'#a5b4fc', borderRadius:8, padding:'3px 10px', fontSize:11, fontWeight:700, whiteSpace:'nowrap' }}>
                             {title.includes('Technical') ? '⚙️' : title.includes('Behavioral') ? '🧠' : title.includes('Culture') || title.includes('Company') ? '🏢' : title.includes('Ask') ? '💬' : title.includes('Prep') || title.includes('Task') ? '✅' : '▸'}
                           </span>
-                          <span style={{ color:'#c4b5fd', fontWeight:700, fontSize:14 }}>{title}</span>
+                          <span style={{ color:'#a7f3d0', fontWeight:700, fontSize:14 }}>{title}</span>
                         </div>
                       );
                       i++; continue;
@@ -4340,7 +4348,7 @@ After uploading/pasting, click Parse Resume to auto-fill your profile." rows={7}
                             <span style={{ color:'#e2e8f0', fontWeight:600, fontSize:13, lineHeight:1.55 }}>{qText}</span>
                           </div>
                           {subs.map((s, si) => {
-                            const labelColors = { ANSWER:'#94a3b8', TIP:'#fbbf24', WHY:'#a78bfa', HOW:'#86efac', GOAL:'#60a5fa', NOTE:'#64748b' };
+                            const labelColors = { ANSWER:'#94a3b8', TIP:'#fbbf24', WHY:'#4ade80', HOW:'#86efac', GOAL:'#60a5fa', NOTE:'#64748b' };
                             const labelIcons  = { ANSWER:'💬', TIP:'💡', WHY:'🎯', HOW:'📋', GOAL:'✓', NOTE:'•' };
                             return (
                               <div key={si} style={{ display:'flex', gap:8, marginTop:8, paddingTop:8, borderTop:'1px solid rgba(255,255,255,0.04)', alignItems:'flex-start' }}>
@@ -4371,7 +4379,7 @@ After uploading/pasting, click Parse Resume to auto-fill your profile." rows={7}
                     // ANSWER: / TIP: / WHY: as standalone lines
                     const subLabelM = trimmed.match(/^(ANSWER|TIP|WHY|HOW|GOAL):\s*(.+)/i);
                     if (subLabelM) {
-                      const labelColors = { ANSWER:'#94a3b8', TIP:'#fbbf24', WHY:'#a78bfa', HOW:'#86efac', GOAL:'#60a5fa' };
+                      const labelColors = { ANSWER:'#94a3b8', TIP:'#fbbf24', WHY:'#4ade80', HOW:'#86efac', GOAL:'#60a5fa' };
                       const labelIcons  = { ANSWER:'💬', TIP:'💡', WHY:'🎯', HOW:'📋', GOAL:'✓' };
                       const lbl = subLabelM[1].toUpperCase();
                       elements.push(
