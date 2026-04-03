@@ -2163,14 +2163,25 @@ ${aiExtractNotes.slice(0,5000)}`,
 
       // 5 search queries run in parallel
       const GMAIL_QUERIES = [
-        { label: "Interview Scheduled",   q: `(subject:interview OR subject:"invite you" OR subject:"next round" OR subject:"schedule a call" OR subject:"interview confirmed") (${HIR} OR ${ATS}) ${EXCL}` },
-        { label: "Offer Received",        q: `(subject:"offer letter" OR subject:"job offer" OR subject:"pleased to offer" OR subject:"congratulations" OR subject:"selected for" OR subject:"we are excited") (${HIR} OR ${ATS}) ${EXCL}` },
-        { label: "Rejected",              q: `(subject:"unfortunately" OR subject:"not moving forward" OR subject:"not selected" OR subject:"other candidates" OR subject:"regret" OR subject:"will not be proceeding") (${HIR} OR ${ATS}) ${EXCL}` },
-        { label: "Applied",               q: `(subject:"application received" OR subject:"thank you for applying" OR subject:"application submitted" OR subject:"application confirmation" OR subject:"we received your" OR subject:"successfully applied" OR subject:"your application") (${HIR} OR ${ATS}) ${EXCL}` },
-        { label: "Screening",             q: `(subject:"phone screen" OR subject:"screening call" OR subject:"initial call" OR subject:"introductory call" OR subject:"recruiter" OR subject:"let's connect") (${HIR} OR ${ATS}) ${EXCL}` },
-        { label: "Assessment",            q: `(subject:"coding challenge" OR subject:"assessment" OR subject:"take-home" OR subject:"online test" OR subject:"technical test" OR subject:"hackerrank" OR subject:"codility") (${HIR} OR ${ATS}) ${EXCL}` },
-        { label: "Follow-up",             q: `(subject:"next steps" OR subject:"following up" OR subject:"update on your" OR subject:"shortlisted" OR subject:"moved forward") (${HIR} OR ${ATS}) ${EXCL}` },
-      ];
+        // Interview invitations
+        { label: 'Interview Scheduled',
+          q: '(subject:interview OR subject:"invite you" OR subject:"next round" OR subject:"schedule a call" OR subject:"interview confirmed" OR subject:"interview invite" OR subject:"interview details" OR subject:"technical interview" OR subject:"hr round" OR subject:"round 1" OR subject:"round 2" OR subject:"joining date" OR subject:"we would like to meet" OR subject:"video interview" OR subject:"telephonic interview") newer_than:90d -subject:newsletter -subject:unsubscribe -subject:"password reset" -subject:OTP -subject:"verify your email"' },
+        // Offers
+        { label: 'Offer Received',
+          q: '(subject:"offer letter" OR subject:"job offer" OR subject:"pleased to offer" OR subject:"congratulations" OR subject:"selected for" OR subject:"we are excited" OR subject:"offer accepted" OR subject:"joining formalities" OR subject:"onboarding" OR subject:"welcome to the team" OR subject:"appointment letter" OR subject:"ctc" OR subject:"compensation letter") newer_than:90d -subject:newsletter -subject:unsubscribe' },
+        // Rejections
+        { label: 'Rejected',
+          q: '(subject:"unfortunately" OR subject:"not moving forward" OR subject:"not selected" OR subject:"other candidates" OR subject:"regret to inform" OR subject:"will not be proceeding" OR subject:"decided not to" OR subject:"position has been filled" OR subject:"not shortlisted" OR subject:"better suited" OR subject:"not be considered" OR subject:"not in a position") newer_than:90d -subject:newsletter -subject:unsubscribe' },
+        // Application confirmations
+        { label: 'Applied',
+          q: '(subject:"application received" OR subject:"thank you for applying" OR subject:"application submitted" OR subject:"application confirmation" OR subject:"we received your" OR subject:"successfully applied" OR subject:"your application" OR subject:"application acknowledged" OR subject:"applied for" OR subject:"resume received" OR subject:"candidature received" OR subject:"application for the role") newer_than:90d -subject:newsletter -subject:unsubscribe -subject:"password reset" -subject:"verify your"' },
+        // Screening / assessment
+        { label: 'Screening',
+          q: '(subject:"phone screen" OR subject:"screening call" OR subject:"initial call" OR subject:"introductory call" OR subject:recruiter OR subject:"coding challenge" OR subject:assessment OR subject:"take-home" OR subject:"online test" OR subject:"hackerrank" OR subject:"codility" OR subject:"aptitude test" OR subject:"written test" OR subject:"technical test" OR subject:"pre-screening" OR subject:"profile shortlisted" OR subject:"shortlisted for interview" OR subject:"merit list" OR subject:"hackerearth") newer_than:90d -subject:newsletter -subject:unsubscribe' },
+        // Follow-ups / status updates
+        { label: 'Follow-up',
+          q: '(subject:"next steps" OR subject:"following up" OR subject:"update on your" OR subject:shortlisted OR subject:"moved forward" OR subject:"further process" OR subject:"keep you posted" OR subject:"application status" OR subject:"background check" OR subject:"reference check" OR subject:"document verification" OR subject:"joining confirmation") newer_than:90d -subject:newsletter -subject:unsubscribe' },
+      ]
 
       // Fetch all 5 in parallel
       const results = await Promise.allSettled(
@@ -3947,41 +3958,57 @@ After uploading/pasting, click Parse Resume to auto-fill your profile." rows={7}
             <F label="App Key"><Inp type="password" value={adzunaKey} onChange={e => setAdzunaKey(e.target.value)} placeholder="your_app_key" /></F>
           </div>
         </div>
-        {/* ── Google Sheets Sync Settings ── */}
-        <div style={{ background: "rgba(34,197,94,0.06)", border: "1px solid rgba(34,197,94,0.22)", borderRadius: 10, padding: 16, margin: "14px 0" }}>
-          <div style={{ color: "#4ade80", fontSize: 11, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 12, display: "flex", alignItems: "center", gap: 8 }}>
-            📊 Google Sheets Sync
-            <span style={{ background: "rgba(34,197,94,0.12)", color: "#4ade80", padding: "1px 8px", borderRadius: 999, fontSize: 9, fontWeight: 700 }}>Free • No setup needed</span>
+        {/* ── Notion Sync Settings ── */}
+        <div style={{ background: "rgba(139,92,246,0.06)", border: "1px solid rgba(139,92,246,0.22)", borderRadius: 10, padding: 16, margin: "14px 0" }}>
+          <div style={{ color: "#a78bfa", fontSize: 11, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 12, display: "flex", alignItems: "center", gap: 8 }}>
+            📝 Notion Sync
+            <span style={{ background: "rgba(139,92,246,0.12)", color: "#a78bfa", padding: "1px 8px", borderRadius: 999, fontSize: 9, fontWeight: 700 }}>Vercel Free Plan ✓</span>
           </div>
           <div style={{ fontSize: 12, color: "#94a3b8", marginBottom: 14, lineHeight: 1.7 }}>
-            Sync all your jobs to a Google Spreadsheet with one click. Uses your existing Google account — no API keys or tokens needed.
-            {sheetsSpreadsheetId && (
-              <span style={{ display: "block", marginTop: 8 }}>
-                <span style={{ color: "#4ade80", fontWeight: 700 }}>✓ Connected</span>
-                {" — "}
-                <a href={`https://docs.google.com/spreadsheets/d/${sheetsSpreadsheetId}`} target="_blank" rel="noopener noreferrer" style={{ color: "#60a5fa", textDecoration: "underline" }}>Open Spreadsheet ↗</a>
-              </span>
-            )}
+            Export your jobs to a Notion database. Requires a Notion Integration Token and Database ID.
+            {notionToken && notionDbId && <span style={{ display: "block", marginTop: 6, color: "#a78bfa", fontWeight: 700 }}>✓ Configured — ready to sync</span>}
           </div>
-          <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 14 }}>
+            <div>
+              <div style={{ color: "#64748b", fontSize: 10, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 6 }}>Integration Token</div>
+              <input
+                type="password"
+                value={notionToken}
+                onChange={e => setNotionToken(e.target.value.trim())}
+                placeholder="secret_xxxxxxxxxxxx"
+                style={{ width: "100%", background: "#070f1c", border: `1px solid ${notionToken ? "rgba(139,92,246,0.4)" : "#1e2d45"}`, borderRadius: 8, padding: "9px 12px", color: "#e2e8f0", fontSize: 13, outline: "none", boxSizing: "border-box", fontFamily: "inherit" }}
+              />
+              <div style={{ fontSize: 9, color: "#475569", marginTop: 4 }}>notion.so/my-integrations → New integration → copy token</div>
+            </div>
+            <div>
+              <div style={{ color: "#64748b", fontSize: 10, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 6 }}>Database ID</div>
+              <input
+                type="text"
+                value={notionDbId}
+                onChange={e => setNotionDbId(e.target.value.trim().replace(/-/g, ""))}
+                placeholder="32-char hex from DB URL"
+                style={{ width: "100%", background: "#070f1c", border: `1px solid ${notionDbId ? "rgba(139,92,246,0.4)" : "#1e2d45"}`, borderRadius: 8, padding: "9px 12px", color: "#e2e8f0", fontSize: 13, outline: "none", boxSizing: "border-box", fontFamily: "inherit" }}
+              />
+              <div style={{ fontSize: 9, color: "#475569", marginTop: 4 }}>URL: notion.so/DATABASE_ID?v=… → copy 32 chars</div>
+            </div>
+          </div>
+          {notionToken && notionDbId && (
             <button
-              onClick={() => syncToGoogleSheets()}
-              disabled={sheetsSyncing || !clientId}
-              style={{ background: "linear-gradient(135deg,#065f46,#047857)", border: "1px solid rgba(34,197,94,0.3)", color: "#a7f3d0", borderRadius: 8, padding: "9px 20px", cursor: sheetsSyncing ? "not-allowed" : "pointer", fontFamily: "inherit", fontSize: 12, fontWeight: 700, display: "flex", alignItems: "center", gap: 8 }}>
-              {sheetsSyncing
-                ? <><span style={{ animation: "spin 0.8s linear infinite", display: "inline-block" }}>◌</span> Syncing…</>
-                : "📊 Sync All " + jobs.length + " Jobs to Google Sheets"}
+              onClick={() => syncToNotion()}
+              disabled={sheetsSyncing}
+              style={{ background: "linear-gradient(135deg,#4c1d95,#5b21b6)", border: "1px solid rgba(139,92,246,0.3)", color: "#c4b5fd", borderRadius: 8, padding: "9px 20px", cursor: sheetsSyncing ? "not-allowed" : "pointer", fontFamily: "inherit", fontSize: 12, fontWeight: 700, display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
+              {sheetsSyncing ? <><span style={{ animation: "spin 0.8s linear infinite", display: "inline-block" }}>◌</span> Syncing…</> : `📝 Sync All ${jobs.length} Jobs to Notion Now`}
             </button>
-            {sheetsSpreadsheetId && (
-              <button
-                onClick={() => { setSheetsSpreadsheetId(""); localStorage.removeItem("sheetsSpreadsheetId"); notify("Spreadsheet link cleared — next sync will create a new one"); }}
-                style={{ background: "transparent", border: "1px solid #1e2d45", color: "#64748b", borderRadius: 8, padding: "8px 14px", cursor: "pointer", fontFamily: "inherit", fontSize: 11 }}>
-                🔄 New Sheet
-              </button>
-            )}
+          )}
+          <div style={{ background: "rgba(139,92,246,0.04)", border: "1px solid rgba(139,92,246,0.12)", borderRadius: 8, padding: "10px 14px", fontSize: 11, color: "#64748b", lineHeight: 1.8 }}>
+            <strong style={{ color: "#8b5cf6" }}>Quick Setup (3 steps):</strong><br/>
+            1. <a href="https://www.notion.so/my-integrations" target="_blank" rel="noreferrer" style={{ color: "#818cf8" }}>notion.so/my-integrations</a> → New integration → copy <em>Internal Integration Secret</em><br/>
+            2. In Notion: open your DB → ··· → <em>Add connections</em> → select your integration<br/>
+            3. Copy 32-char DB ID from URL: notion.so/<strong style={{ color: "#a78bfa" }}>xxxxxxxx…</strong>?v=…<br/>
+            <strong style={{ color: "#8b5cf6" }}>Notion DB columns needed:</strong> Name (Title), Company, Status, Location, Salary, Priority, Skills, Apply Link, Applied Date, Deadline, Source, Notes
           </div>
-          {!clientId && (
-            <div style={{ fontSize: 10, color: "#f59e0b", marginTop: 10 }}>⚠️ Add your Google Client ID above first to enable Sheets sync.</div>
+          {!notionToken && (
+            <div style={{ fontSize: 10, color: "#f59e0b", marginTop: 10 }}>⚠️ Works on Vercel Free (Hobby) plan — uses a serverless proxy at /api/notion</div>
           )}
         </div>
 
