@@ -1295,6 +1295,10 @@ export default function Dashboard({ session }) {
   const [proxyUrl, setProxyUrl] = useState(() => localStorage.getItem("proxyUrl") || NVIDIA_API_URL);
   const [adzunaId,  setAdzunaId]  = useState(() => localStorage.getItem('adzunaId')  || import.meta.env.VITE_ADZUNA_ID  || '');
   const [adzunaKey, setAdzunaKey] = useState(() => localStorage.getItem('adzunaKey') || import.meta.env.VITE_ADZUNA_KEY || '');
+  // ── Notion state ─────────────────────────────────────────────────────
+  const [notionToken,   setNotionToken]   = useState(() => localStorage.getItem("notionToken") || "");
+  const [notionDbId,    setNotionDbId]    = useState(() => localStorage.getItem("notionDbId")  || "");
+  const [notionSyncing, setNotionSyncing] = useState(false);
   const [reportEmail, setReportEmail] = useState(() => localStorage.getItem("reportEmail") || session?.user?.email || "");
   // Multi-email scanner recipients
   const [scannerEmails, setScannerEmails] = useState(() => {
@@ -1544,9 +1548,9 @@ export default function Dashboard({ session }) {
 
       if (jobSearchFormat === "pdf" || jobSearchFormat === "both") {
         // Send email with HTML body (PDF too large to attach via raw, save to Drive instead)
-        for (const target of targets) {
-        await sendEmailViaGmail(target, subject, htmlBody, token);
-      }
+        for (const target of (allTargets.length > 0 ? allTargets : [reportEmail])) {
+          await sendEmailViaGmail(target, subject, htmlBody, token);
+        }
         const pdfDoc = await generateJobDigestPDF(results, searchDate, profile.full_name || "", keywords);
         const pdfBuf = pdfDoc.output("arraybuffer");
         const pdfFilename = filename.replace(".xlsx", ".pdf");
@@ -1873,6 +1877,8 @@ ${resumeText.slice(0, 8000)}`,
     localStorage.setItem("jobSearchResultCount", jobSearchResultCount);
     localStorage.setItem("jobSearchFormat", jobSearchFormat);
     localStorage.setItem("reportFormat", reportFormat);
+    localStorage.setItem("notionToken",   notionToken);
+    localStorage.setItem("notionDbId",    notionDbId);
     // Clear ALL cached Google tokens so new clientId / scopes take effect
     try { Object.keys(sessionStorage).filter(k => k.startsWith("gtoken_")).forEach(k => sessionStorage.removeItem(k)); } catch { }
     notify("Settings saved ✓");
@@ -2096,6 +2102,49 @@ ${aiExtractNotes.slice(0,5000)}`,
       setAiExtractNotes("");
     } catch (err) { notify("AI Extract: " + err.message, "err"); }
     setAiExtractLoading(false);
+  }
+
+  // ── Notion Sync ──────────────────────────────────────────────────────────
+  async function syncToNotion(jobsToSync) {
+    if (!notionToken) return notify("Add your Notion Integration Token in ⚙️ Settings", "err");
+    if (!notionDbId)  return notify("Add your Notion Database ID in ⚙️ Settings", "err");
+    const toSync = jobsToSync || jobs;
+    if (!toSync.length) return notify("No jobs to sync", "err");
+    setNotionSyncing(true);
+    notify("Syncing " + toSync.length + " jobs to Notion…");
+    try {
+      const res = await fetch("/api/notion", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "sync_jobs",
+          token: notionToken,
+          database_id: notionDbId,
+          jobs: toSync.map(j => ({
+            id: j.id,
+            title: j.title,
+            company: j.company || "",
+            location: j.location || "",
+            status: j.status,
+            priority: j.priority,
+            salary: j.salary || "",
+            skills: j.skills || "",
+            source: j.source || "",
+            applylink: j.applylink || "",
+            applieddate: j.applieddate || "",
+            deadline: j.deadline || "",
+            notes: (j.notes || "").slice(0, 500),
+          }))
+        })
+      });
+      if (!res.ok) { const t = await res.text(); throw new Error(t); }
+      const data = await res.json();
+      if (data.error) throw new Error(data.error);
+      notify("Synced " + (data.synced || 0) + " / " + toSync.length + " jobs to Notion ✓");
+    } catch (err) {
+      notify("Notion error: " + err.message, "err");
+    }
+    setNotionSyncing(false);
   }
 
   // ── Gmail Multi-Category Scanner (5 categories simultaneously) ──────────
@@ -2695,23 +2744,29 @@ Format: Professional letter. Opening hook, relevant experience paragraph, strong
     setGmailLoading(true);
     setGmailEmails([]);
     setGmailStats(null);
-    setGmailScanProgress({});
-    setGmailStatus({ msg: `Scanning ${gmailAccounts.length} account${gmailAccounts.length > 1 ? "s" : ""}…`, type: "loading" });
+    // Show every account as "scanning" from the first frame
+    const _initProgress = {};
+    gmailAccounts.forEach(a => { _initProgress[a.email] = "scanning"; });
+    setGmailScanProgress(_initProgress);
+    setGmailStatus({ msg: "Scanning " + gmailAccounts.length + " account" + (gmailAccounts.length > 1 ? "s" : "") + " in parallel…", type: "loading" });
 
     const combined = [];
     let errorCount = 0;
 
-    // Scan accounts sequentially to avoid OAuth conflicts
-    for (const acc of gmailAccounts) {
-      try {
-        const result = await scanSingleAccount(acc);
-        if (result.emails?.length) combined.push(...result.emails);
-        if (result.error) errorCount++;
-      } catch (err) {
-        console.warn(`Scan failed for ${acc.email}:`, err);
+    // Scan all accounts simultaneously — typically 3-4× faster
+    const _scanResults = await Promise.allSettled(
+      gmailAccounts.map(acc => scanSingleAccount(acc))
+    );
+    _scanResults.forEach((r, i) => {
+      const acc = gmailAccounts[i];
+      if (r.status === "fulfilled") {
+        if (r.value?.emails?.length) combined.push(...r.value.emails);
+        if (r.value?.error) { errorCount++; }
+      } else {
         errorCount++;
+        if (acc) setGmailScanProgress(p => ({ ...p, [acc.email]: "error" }));
       }
-    }
+    });
 
     if (!combined.length) {
       const msg = errorCount > 0
@@ -2998,6 +3053,11 @@ ${JSON.stringify(deduped.slice(0, 30))}`,
               🔍 Find Jobs
               {sr.length > 0 && <span style={{ background: "#06b6d4", color: "#fff", borderRadius: 999, padding: "1px 5px", fontSize: 9, fontWeight: 700, marginLeft: 2 }}>{sr.length}</span>}
             </Btn>
+            {notionToken && notionDbId && (
+              <Btn onClick={() => syncToNotion()} disabled={notionSyncing} v="vio" sx={{ fontSize: 11, padding: "7px 12px" }}>
+                {notionSyncing ? <><span style={{ animation: "spin 0.8s linear infinite", display: "inline-block" }}>◌</span> Syncing…</> : "📝 Notion"}
+              </Btn>
+            )}
             <Btn onClick={() => setShowSettings(true)} v="ghost">⚙️</Btn>
             <Btn onClick={() => supabase.auth.signOut()} v="red">⏏️</Btn>
             <div style={{ width: 1, height: 20, background: "#1e2d45" }} />
@@ -3885,6 +3945,38 @@ After uploading/pasting, click Parse Resume to auto-fill your profile." rows={7}
             <F label="App Key"><Inp type="password" value={adzunaKey} onChange={e => setAdzunaKey(e.target.value)} placeholder="your_app_key" /></F>
           </div>
         </div>
+        {/* ── Notion Sync Settings ── */}
+        <div style={{ background: "rgba(139,92,246,0.06)", border: "1px solid rgba(139,92,246,0.22)", borderRadius: 10, padding: 16, margin: "14px 0" }}>
+          <div style={{ color: "#a78bfa", fontSize: 11, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 12, display: "flex", alignItems: "center", gap: 8 }}>
+            📝 Notion Sync
+            <span style={{ background: "rgba(139,92,246,0.12)", color: "#a78bfa", padding: "1px 8px", borderRadius: 999, fontSize: 9, fontWeight: 700 }}>Export jobs to Notion</span>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 12 }}>
+            <F label="Integration Token" hint="notion.so/my-integrations">
+              <Inp type="password" value={notionToken} onChange={e => setNotionToken(e.target.value)} placeholder="secret_…" />
+            </F>
+            <F label="Database ID" hint="32 chars from Notion DB URL">
+              <Inp value={notionDbId} onChange={e => setNotionDbId(e.target.value)} placeholder="xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" />
+            </F>
+          </div>
+          {notionToken && notionDbId && (
+            <button
+              onClick={() => syncToNotion()}
+              disabled={notionSyncing}
+              style={{ background: "linear-gradient(135deg,#4c1d95,#5b21b6)", border: "1px solid rgba(139,92,246,0.3)", color: "#c4b5fd", borderRadius: 8, padding: "9px 20px", cursor: notionSyncing ? "not-allowed" : "pointer", fontFamily: "inherit", fontSize: 12, fontWeight: 700, display: "flex", alignItems: "center", gap: 8 }}>
+              {notionSyncing
+                ? <><span style={{ animation: "spin 0.8s linear infinite", display: "inline-block" }}>◌</span> Syncing…</>
+                : "📝 Sync All " + jobs.length + " Jobs to Notion Now"}
+            </button>
+          )}
+          <div style={{ fontSize: 10, color: "#475569", marginTop: 10, lineHeight: 1.8 }}>
+            <strong style={{ color: "#6b7280" }}>Setup (3 steps):</strong><br/>
+            1. notion.so/my-integrations → New integration → copy <em>Internal Integration Token</em><br/>
+            2. In Notion: create a DB with columns → Name, Company, Status, Location, Salary, Priority, Skills, Apply Link, Applied Date, Deadline, Source<br/>
+            3. Open that DB → ··· menu → <em>Add connections</em> → pick your integration → copy the 32-char DB ID from the URL
+          </div>
+        </div>
+
         <div style={{ background: "rgba(245,158,11,0.06)", border: "1px solid rgba(245,158,11,0.15)", borderRadius: 10, padding: "14px 16px", marginBottom: 14, fontSize: 12, color: "#fbbf24", lineHeight: 1.8 }}>
           🔐 <strong>Google "Unverified App" warning?</strong><br />
           <span style={{ color: "#94a3b8" }}>
