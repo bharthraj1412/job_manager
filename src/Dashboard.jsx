@@ -2897,41 +2897,123 @@ ${JSON.stringify(deduped.slice(0, 30))}`,
 
   async function fetchAndParseEmails(token) {
     try {
-      setGmailStatus({ msg: "Searching inbox…", type: "loading" });
-      const _baseParts = [
-        '(subject:"interview" OR subject:"job offer" OR subject:"offer letter" OR',
-        'subject:"application received" OR subject:"thank you for applying" OR',
-        'subject:"application submitted" OR subject:"not moving forward" OR',
-        'subject:"unfortunately" OR subject:"not selected" OR subject:"regret" OR subject:"screening call" OR subject:"phone screen" OR subject:"coding challenge" OR subject:"assessment" OR subject:"take-home" OR subject:"next steps" OR subject:"congratulations" OR subject:"selected for" OR subject:"following up" OR subject:"shortlisted")',
-        '-subject:newsletter -subject:unsubscribe -subject:"verify your email" -subject:"password reset" -subject:"your receipt" -subject:"your order"',
+      setGmailStatus({ msg: "Searching inbox across 6 categories…", type: "loading" });
+      const days = gmailDays || "30";
+      const extra = gmailExtra ? ` ${gmailExtra}` : "";
+
+      // 6 targeted queries run in parallel — same coverage as multi-account scan
+      const SINGLE_QUERIES = [
+        { label: "Interview Scheduled",
+          q: `(subject:interview OR subject:"invite you" OR subject:"next round" OR subject:"schedule a call" OR subject:"interview confirmed" OR subject:"interview invite" OR subject:"interview details" OR subject:"technical interview" OR subject:"hr round" OR subject:"round 1" OR subject:"round 2" OR subject:"joining date" OR subject:"we would like to meet" OR subject:"video interview" OR subject:"telephonic interview") newer_than:${days}d -subject:newsletter -subject:unsubscribe -subject:"password reset" -subject:OTP -subject:"verify your email"${extra}` },
+        { label: "Offer Received",
+          q: `(subject:"offer letter" OR subject:"job offer" OR subject:"pleased to offer" OR subject:"congratulations" OR subject:"selected for" OR subject:"we are excited" OR subject:"offer accepted" OR subject:"joining formalities" OR subject:"onboarding" OR subject:"welcome to the team" OR subject:"appointment letter" OR subject:"ctc" OR subject:"compensation letter") newer_than:${days}d -subject:newsletter -subject:unsubscribe${extra}` },
+        { label: "Rejected",
+          q: `(subject:"unfortunately" OR subject:"not moving forward" OR subject:"not selected" OR subject:"other candidates" OR subject:"regret to inform" OR subject:"will not be proceeding" OR subject:"decided not to" OR subject:"position has been filled" OR subject:"not shortlisted" OR subject:"better suited" OR subject:"not be considered" OR subject:"not in a position") newer_than:${days}d -subject:newsletter -subject:unsubscribe${extra}` },
+        { label: "Applied",
+          q: `(subject:"application received" OR subject:"thank you for applying" OR subject:"application submitted" OR subject:"application confirmation" OR subject:"we received your" OR subject:"successfully applied" OR subject:"your application" OR subject:"application acknowledged" OR subject:"applied for" OR subject:"resume received" OR subject:"candidature received" OR subject:"application for the role") newer_than:${days}d -subject:newsletter -subject:unsubscribe -subject:"password reset" -subject:"verify your"${extra}` },
+        { label: "Screening",
+          q: `(subject:"phone screen" OR subject:"screening call" OR subject:"initial call" OR subject:"introductory call" OR subject:recruiter OR subject:"coding challenge" OR subject:assessment OR subject:"take-home" OR subject:"online test" OR subject:"hackerrank" OR subject:"codility" OR subject:"aptitude test" OR subject:"written test" OR subject:"technical test" OR subject:"pre-screening" OR subject:"profile shortlisted" OR subject:"shortlisted for interview" OR subject:"merit list" OR subject:"hackerearth") newer_than:${days}d -subject:newsletter -subject:unsubscribe${extra}` },
+        { label: "Follow-up",
+          q: `(subject:"next steps" OR subject:"following up" OR subject:"update on your" OR subject:shortlisted OR subject:"moved forward" OR subject:"further process" OR subject:"keep you posted" OR subject:"application status" OR subject:"background check" OR subject:"reference check" OR subject:"document verification" OR subject:"joining confirmation") newer_than:${days}d -subject:newsletter -subject:unsubscribe${extra}` },
       ];
-      let baseQ = _baseParts.join(" ") + " newer_than:" + gmailDays + "d";
-      if (gmailExtra) baseQ += ` ${gmailExtra}`;
-      const res = await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/messages?q=${encodeURIComponent(baseQ)}&maxResults=60`, { headers: { Authorization: `Bearer ${token}` } });
-      const data = await res.json();
-      if (!data.messages?.length) { setGmailStatus({ msg: "No job-related emails found.", type: "success" }); setGmailLoading(false); return; }
-      setGmailStatus({ msg: `Reading ${data.messages.length} emails…`, type: "loading" });
-      const batch = await Promise.all(data.messages.map(m => fetch(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${m.id}?format=metadata&metadataHeaders=Subject&metadataHeaders=From&metadataHeaders=Date`, { headers: { Authorization: `Bearer ${token}` } }).then(r => r.json())));
-      const payload = batch.map(d => {
-        let subject = "", sender = "", date = "";
-        d.payload?.headers?.forEach(h => {
-          if (h.name.toLowerCase() === "subject") subject = h.value;
-          if (h.name.toLowerCase() === "from") sender = h.value;
-          if (h.name.toLowerCase() === "date") date = h.value;
-        });
-        return { subject, sender, date, snippet: d.snippet };
-      });
-      setGmailStatus({ msg: "Analyzing with AI…", type: "loading" });
-      const text = await AI(`Analyze these job emails. Return ONLY a JSON array. Each object: {company,jobTitle,status(Applied|Screening|Interview Scheduled|Interview Done|Offer Received|Rejected|Pending),interviewDate,interviewTime,interviewType,sender,date,snippet,subject}.\n${JSON.stringify(payload)}`, "Return only a valid JSON array, no markdown.");
+
+      const queryResults = await Promise.allSettled(
+        SINGLE_QUERIES.map(({ label, q }) =>
+          fetch(
+            `https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=50&q=${encodeURIComponent(q)}`,
+            { headers: { Authorization: `Bearer ${token}` } }
+          ).then(r => r.json()).then(data => ({ label, messages: data.messages || [] }))
+          .catch(() => ({ label, messages: [] }))
+        )
+      );
+
+      // Collect all message IDs with their detected category; deduplicate by message id
+      const seen = new Set();
+      const allMessages = [];
+      for (const r of queryResults) {
+        if (r.status === "fulfilled") {
+          for (const m of r.value.messages) {
+            if (!seen.has(m.id)) { seen.add(m.id); allMessages.push({ ...m, category: r.value.label }); }
+          }
+        }
+      }
+
+      if (!allMessages.length) {
+        setGmailStatus({ msg: `No job-related emails found in the last ${days} days.`, type: "success" });
+        setGmailLoading(false);
+        return;
+      }
+
+      setGmailStatus({ msg: `Reading ${Math.min(allMessages.length, 60)} emails…`, type: "loading" });
+
+      // Fetch details for top 60 emails (subject, sender, date, snippet)
+      const details = await Promise.allSettled(
+        allMessages.slice(0, 60).map(msg =>
+          fetch(
+            `https://gmail.googleapis.com/gmail/v1/users/me/messages/${msg.id}?format=metadata&metadataHeaders=Subject&metadataHeaders=From&metadataHeaders=Date`,
+            { headers: { Authorization: `Bearer ${token}` } }
+          ).then(r => r.json()).then(data => {
+            const hdrs = data.payload?.headers || [];
+            const get = n => hdrs.find(h => h.name === n)?.value || "";
+            return { subject: get("Subject"), sender: get("From"), date: get("Date"), snippet: data.snippet || "", category: msg.category };
+          }).catch(() => null)
+        )
+      );
+
+      const payload = details.filter(r => r.status === "fulfilled" && r.value).map(r => r.value);
+      if (!payload.length) {
+        setGmailStatus({ msg: "✓ Scan complete. Could not read email details.", type: "success" });
+        setGmailLoading(false);
+        return;
+      }
+
+      setGmailStatus({ msg: `Analyzing ${payload.length} emails with AI…`, type: "loading" });
+
+      // Pass per-category hints to AI so it has context beyond just subject keywords
+      const text = await AI(
+        `Analyze these job-related emails from Gmail. Each email has a pre-detected "category" hint. Return ONLY a valid JSON array. Each object must have: company, jobTitle, status (one of: Applied|Screening|Interview Scheduled|Interview Done|Offer Received|Rejected|Pending), interviewDate, interviewTime, interviewType, sender, date, snippet, subject, category.
+
+Emails:
+${JSON.stringify(payload.slice(0, 40))}`,
+        "Return only a valid JSON array, no markdown, no extra text."
+      );
       const match = text.replace(/```json|```/g, "").trim().match(/\[[\s\S]*\]/);
       const emails = match ? JSON.parse(match[0]) : [];
       if (emails.length) {
         setGmailEmails(emails);
-        const stats = { total: emails.length, applied: emails.filter(e => e.status === "Applied").length, interview: emails.filter(e => e.status.includes("Interview")).length, offer: emails.filter(e => e.status.includes("Offer")).length, rejected: emails.filter(e => e.status === "Rejected").length, pending: emails.filter(e => e.status === "Pending").length };
+        const stats = {
+          total: emails.length,
+          applied: emails.filter(e => e.status === "Applied").length,
+          interview: emails.filter(e => e.status?.includes("Interview")).length,
+          offer: emails.filter(e => e.status?.includes("Offer")).length,
+          rejected: emails.filter(e => e.status === "Rejected").length,
+          pending: emails.filter(e => e.status === "Pending" || e.status === "Screening").length,
+        };
         setGmailStats(stats);
         setGmailRows(emails.map((e, i) => ({ id: i + 1, date: e.date ? e.date.split("T")[0] : "", company: e.company || "", jobTitle: e.jobTitle || "", status: e.status || "Applied", interviewDate: e.interviewDate || "", interviewTime: e.interviewTime || "", interviewType: e.interviewType || "", notes: e.snippet || "" })));
         setGmailStatus({ msg: `✓ Found ${emails.length} job-related emails`, type: "success" });
-      } else { setGmailStatus({ msg: "✓ Scan complete. No structured matches found.", type: "success" }); }
+      } else {
+        // AI returned nothing — show raw results with pre-detected categories
+        setGmailEmails(payload.map(e => ({
+          company: e.sender?.match(/^"?([^"<@]+)/)?.[1]?.trim() || "Unknown",
+          jobTitle: e.subject || "Position",
+          status: e.category || "Applied",
+          sender: e.sender,
+          date: e.date,
+          snippet: e.snippet,
+          subject: e.subject,
+        })));
+        const rawStats = {
+          total: payload.length,
+          applied: payload.filter(e => e.category === "Applied").length,
+          interview: payload.filter(e => e.category === "Interview Scheduled").length,
+          offer: payload.filter(e => e.category === "Offer Received").length,
+          rejected: payload.filter(e => e.category === "Rejected").length,
+          pending: payload.filter(e => e.category === "Screening" || e.category === "Follow-up").length,
+        };
+        setGmailStats(rawStats);
+        setGmailStatus({ msg: `✓ Found ${payload.length} emails (showing raw — AI analysis failed)`, type: "success" });
+      }
     } catch (err) { setGmailStatus({ msg: "Error: " + err.message, type: "error" }); }
     setGmailLoading(false);
   }
