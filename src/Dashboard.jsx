@@ -2974,7 +2974,7 @@ ${JSON.stringify(deduped.slice(0, 30))}`,
         `Analyze these job-related emails from Gmail. Each email has a pre-detected "category" hint. Return ONLY a valid JSON array. Each object must have: company, jobTitle, status (one of: Applied|Screening|Interview Scheduled|Interview Done|Offer Received|Rejected|Pending), interviewDate, interviewTime, interviewType, sender, date, snippet, subject, category.
 
 Emails:
-${JSON.stringify(payload.slice(0, 40))}`,
+${JSON.stringify(payload)}`,
         "Return only a valid JSON array, no markdown, no extra text."
       );
       const match = text.replace(/```json|```/g, "").trim().match(/\[[\s\S]*\]/);
@@ -2993,11 +2993,11 @@ ${JSON.stringify(payload.slice(0, 40))}`,
         setGmailRows(emails.map((e, i) => ({ id: i + 1, date: e.date ? e.date.split("T")[0] : "", company: e.company || "", jobTitle: e.jobTitle || "", status: e.status || "Applied", interviewDate: e.interviewDate || "", interviewTime: e.interviewTime || "", interviewType: e.interviewType || "", notes: e.snippet || "" })));
         setGmailStatus({ msg: `✓ Found ${emails.length} job-related emails`, type: "success" });
       } else {
-        // AI returned nothing — show raw results with pre-detected categories
+        // AI returned nothing — show raw results with pre-detected categories mapped to valid statuses
         setGmailEmails(payload.map(e => ({
           company: e.sender?.match(/^"?([^"<@]+)/)?.[1]?.trim() || "Unknown",
           jobTitle: e.subject || "Position",
-          status: e.category || "Applied",
+          status: emailCategoryToStatus(e.category),
           sender: e.sender,
           date: e.date,
           snippet: e.snippet,
