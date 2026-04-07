@@ -98,6 +98,21 @@ function formatSalary(min, max) {
   return max && max !== min ? `${fmt(min)} – ${fmt(max)}` : fmt(min);
 }
 
+// Maps Gmail scan categories to valid tracker job statuses
+function emailCategoryToStatus(category) {
+  const map = {
+    "Interview Scheduled": "Interview",
+    "Interview Done":      "Interview",
+    "Offer Received":      "Offer",
+    "Rejected":            "Rejected",
+    "Applied":             "Applied",
+    "Screening":           "Applied",
+    "Follow-up":           "Applied",
+    "Pending":             "Applied",
+  };
+  return map[category] || "Applied";
+}
+
 function calcMatchScore(jobSkills, profileSkills) {
   if (!jobSkills || !profileSkills) return 0;
   const jSkills = jobSkills.toLowerCase().split(/[,\s]+/).filter(s => s.length > 2);
@@ -2183,11 +2198,11 @@ ${aiExtractNotes.slice(0,5000)}`,
           q: '(subject:"next steps" OR subject:"following up" OR subject:"update on your" OR subject:shortlisted OR subject:"moved forward" OR subject:"further process" OR subject:"keep you posted" OR subject:"application status" OR subject:"background check" OR subject:"reference check" OR subject:"document verification" OR subject:"joining confirmation") newer_than:90d -subject:newsletter -subject:unsubscribe' },
       ]
 
-      // Fetch all 5 in parallel
+      // Fetch all 6 in parallel — queries already contain newer_than so no need to append
       const results = await Promise.allSettled(
         GMAIL_QUERIES.map(({ label, q }) =>
           fetch(
-            `https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=50&q=${encodeURIComponent(q + " newer_than:60d")}`,
+            `https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=50&q=${encodeURIComponent(q)}`,
             { headers: { Authorization: `Bearer ${token}` } }
           )
             .then(r => r.json())
@@ -2221,7 +2236,7 @@ ${aiExtractNotes.slice(0,5000)}`,
             .then(data => {
               const headers = data.payload?.headers || [];
               const get = (n) => headers.find(h => h.name === n)?.value || "";
-              return { id: msg.id, subject: get("Subject"), from: get("From"), date: get("Date"), category: msg.category };
+              return { id: msg.id, subject: get("Subject"), from: get("From"), date: get("Date"), snippet: data.snippet || "", category: msg.category };
             })
             .catch(() => null)
         )
@@ -2256,25 +2271,27 @@ ${aiExtractNotes.slice(0,5000)}`,
           );
         });
 
-        if (matchedJob && matchedJob.status !== email.category) {
+        if (matchedJob && matchedJob.status !== emailCategoryToStatus(email.category)) {
           // Only update to more advanced status
           const statusOrder = ["Bookmarked", "Applied", "Screening", "Interview", "Offer", "Rejected", "Withdrawn"];
+          const mappedStatus = emailCategoryToStatus(email.category);
           const currentIdx = statusOrder.indexOf(matchedJob.status);
-          const newIdx = statusOrder.indexOf(email.category);
-          if (newIdx > currentIdx || email.category === "Rejected" || email.category === "Offer") {
-            updates.push({ ...matchedJob, status: email.category, notes: (matchedJob.notes || "") + `\n[Email ${new Date(email.date).toLocaleDateString()}] ${email.subject}` });
+          const newIdx = statusOrder.indexOf(mappedStatus);
+          if (newIdx > currentIdx || mappedStatus === "Rejected" || mappedStatus === "Offer") {
+            updates.push({ ...matchedJob, status: mappedStatus, notes: (matchedJob.notes || "") + `\n[Email ${new Date(email.date).toLocaleDateString()}] ${email.subject}` });
             updatedCount++;
           }
         } else if (!matchedJob) {
           // New job from email — extract company from sender
           const company = email.from.match(/^"?([^"<]+)"?\s*</)?.[1]?.trim() || fromDomain || "Unknown";
+          const mappedStatus = emailCategoryToStatus(email.category);
           const newJob = {
             title: email.subject.replace(/re:/i, "").trim().slice(0, 80),
             company: company.slice(0, 50),
-            status: email.category,
+            status: mappedStatus,
             notes: `[Imported from Gmail ${new Date(email.date).toLocaleDateString()}]\n${email.subject}`,
             source: "Gmail Scan",
-            applieddate: email.category === "Applied" ? new Date(email.date).toISOString().split("T")[0] : "",
+            applieddate: mappedStatus === "Applied" ? new Date(email.date).toISOString().split("T")[0] : "",
             location: "", type: "Full-time", salary: "", skills: "", deadline: "", priority: "Medium", applylink: "",
           };
           newCount++;
@@ -2690,12 +2707,20 @@ Format: Professional letter. Opening hook, relevant experience paragraph, strong
 
     // Step 3: Use token to scan Gmail
     try {
+      const days = gmailDays || "60";
       const QUERIES = [
-        { label: "Interview Scheduled", q: '(subject:interview OR subject:"invite you" OR subject:"next round" OR subject:"schedule a call" OR subject:"interview confirmed") (from:careers OR from:jobs OR from:recruiting OR from:hr OR from:talent OR from:greenhouse.io OR from:lever.co OR from:workday.com OR from:icims.com OR from:smartrecruiters.com) newer_than:60d -subject:newsletter -subject:unsubscribe' },
-        { label: "Offer Received",      q: '(subject:"offer letter" OR subject:"job offer" OR subject:"pleased to offer" OR subject:"congratulations" OR subject:"selected for" OR subject:"we are excited") (from:careers OR from:jobs OR from:hr OR from:recruiting OR from:greenhouse.io OR from:lever.co OR from:workday.com OR from:icims.com OR from:smartrecruiters.com) newer_than:60d -subject:newsletter' },
-        { label: "Rejected",            q: '(subject:"unfortunately" OR subject:"not moving forward" OR subject:"not selected" OR subject:"other candidates" OR subject:"regret" OR subject:"will not be proceeding" OR subject:"decided not to") (from:careers OR from:jobs OR from:hr OR from:noreply OR from:recruiting OR from:greenhouse.io OR from:lever.co OR from:workday.com OR from:icims.com OR from:smartrecruiters.com) newer_than:60d -subject:newsletter -subject:unsubscribe' },
-        { label: "Applied",             q: '(subject:"application received" OR subject:"thank you for applying" OR subject:"application submitted" OR subject:"application confirmation" OR subject:"we received your" OR subject:"successfully applied" OR subject:"your application") newer_than:60d -subject:newsletter -subject:unsubscribe -subject:"password reset" -subject:"verify your"' },
-        { label: "Screening",           q: '(subject:"phone screen" OR subject:"screening call" OR subject:"initial call" OR subject:"introductory call" OR subject:recruiter OR subject:"coding challenge" OR subject:assessment OR subject:"take-home" OR subject:"next steps" OR subject:"following up" OR subject:shortlisted) (from:careers OR from:jobs OR from:recruiting OR from:hr OR from:talent OR from:greenhouse.io OR from:lever.co OR from:workday.com OR from:icims.com OR from:smartrecruiters.com) newer_than:60d -subject:newsletter' },
+        { label: "Interview Scheduled",
+          q: `(subject:interview OR subject:"invite you" OR subject:"next round" OR subject:"schedule a call" OR subject:"interview confirmed" OR subject:"interview invite" OR subject:"interview details" OR subject:"technical interview" OR subject:"hr round" OR subject:"round 1" OR subject:"round 2" OR subject:"joining date" OR subject:"we would like to meet" OR subject:"video interview" OR subject:"telephonic interview") newer_than:${days}d -subject:newsletter -subject:unsubscribe -subject:"password reset" -subject:OTP -subject:"verify your email"` },
+        { label: "Offer Received",
+          q: `(subject:"offer letter" OR subject:"job offer" OR subject:"pleased to offer" OR subject:"congratulations" OR subject:"selected for" OR subject:"we are excited" OR subject:"offer accepted" OR subject:"joining formalities" OR subject:"onboarding" OR subject:"welcome to the team" OR subject:"appointment letter" OR subject:"ctc" OR subject:"compensation letter") newer_than:${days}d -subject:newsletter -subject:unsubscribe` },
+        { label: "Rejected",
+          q: `(subject:"unfortunately" OR subject:"not moving forward" OR subject:"not selected" OR subject:"other candidates" OR subject:"regret to inform" OR subject:"will not be proceeding" OR subject:"decided not to" OR subject:"position has been filled" OR subject:"not shortlisted" OR subject:"better suited" OR subject:"not be considered" OR subject:"not in a position") newer_than:${days}d -subject:newsletter -subject:unsubscribe` },
+        { label: "Applied",
+          q: `(subject:"application received" OR subject:"thank you for applying" OR subject:"application submitted" OR subject:"application confirmation" OR subject:"we received your" OR subject:"successfully applied" OR subject:"your application" OR subject:"application acknowledged" OR subject:"applied for" OR subject:"resume received" OR subject:"candidature received" OR subject:"application for the role") newer_than:${days}d -subject:newsletter -subject:unsubscribe -subject:"password reset" -subject:"verify your"` },
+        { label: "Screening",
+          q: `(subject:"phone screen" OR subject:"screening call" OR subject:"initial call" OR subject:"introductory call" OR subject:recruiter OR subject:"coding challenge" OR subject:assessment OR subject:"take-home" OR subject:"online test" OR subject:"hackerrank" OR subject:"codility" OR subject:"aptitude test" OR subject:"written test" OR subject:"technical test" OR subject:"pre-screening" OR subject:"profile shortlisted" OR subject:"shortlisted for interview" OR subject:"merit list" OR subject:"hackerearth") newer_than:${days}d -subject:newsletter -subject:unsubscribe` },
+        { label: "Follow-up",
+          q: `(subject:"next steps" OR subject:"following up" OR subject:"update on your" OR subject:shortlisted OR subject:"moved forward" OR subject:"further process" OR subject:"keep you posted" OR subject:"application status" OR subject:"background check" OR subject:"reference check" OR subject:"document verification" OR subject:"joining confirmation") newer_than:${days}d -subject:newsletter -subject:unsubscribe` },
       ];
 
       const results = await Promise.allSettled(
@@ -2784,7 +2809,7 @@ Format: Professional letter. Opening hook, relevant experience paragraph, strong
     if (!combined.length) {
       const msg = errorCount > 0
         ? `Scan had errors on ${errorCount} account(s). Try removing and re-adding them.`
-        : "No job-related emails found in the last 30 days.";
+        : `No job-related emails found in the last ${gmailDays} days.`;
       setGmailStatus({ msg, type: errorCount > 0 ? "error" : "success" });
       setGmailLoading(false);
       return;
@@ -3473,7 +3498,7 @@ ${JSON.stringify(deduped.slice(0, 30))}`,
                 {/* Info note */}
                 <div style={{ background: "rgba(99,102,241,0.05)", border: "1px solid rgba(99,102,241,0.15)", borderRadius: 10, padding: "10px 14px", fontSize: 11, color: "#a5b4fc", display: "flex", gap: 8, alignItems: "flex-start" }}>
                   <span style={{ flexShrink: 0 }}>🔐</span>
-                  <span><strong>To add a 2nd Gmail:</strong> Open a new tab → google.com → sign in with the other account → return here → click + Add Gmail Account. Tokens are cached after adding so scans run without extra popups.</span>
+                  <span><strong>To add a 2nd Gmail account:</strong> Click <em>+ Add Gmail Account</em> — a Google account-picker popup will appear. Select the account you want to add (or click "Use another account" to sign in to a new one). Tokens are cached after adding so subsequent scans run silently without extra popups. If the account is already connected, remove it first and re-add it to refresh the token.</span>
                 </div>
               </div>
             )}
