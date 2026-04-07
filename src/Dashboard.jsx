@@ -130,7 +130,10 @@ function extractEmailBody(payload, maxLen = 800) {
   let text = walkPart(payload, "text/plain");
   if (!text) {
     const html = walkPart(payload, "text/html");
-    text = html.replace(/<[^>]+>/g, " ").replace(/&nbsp;/g, " ").replace(/&amp;/g, "&");
+    text = html.replace(/<[^>]+>/g, " ")
+              .replace(/&nbsp;/g, " ").replace(/&amp;/g, "&")
+              .replace(/&lt;/g, "<").replace(/&gt;/g, ">")
+              .replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&apos;/g, "'");
   }
   return text.replace(/\s+/g, " ").trim().substring(0, maxLen);
 }
