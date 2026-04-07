@@ -98,11 +98,12 @@ function formatSalary(min, max) {
   return max && max !== min ? `${fmt(min)} – ${fmt(max)}` : fmt(min);
 }
 
-// Maps Gmail scan categories to valid tracker job statuses
+// Maps Gmail scan categories to valid tracker job statuses.
+// Falls back to "Applied" for any unrecognized category so new jobs
+// are always created with a valid status rather than being silently dropped.
 function emailCategoryToStatus(category) {
   const map = {
     "Interview Scheduled": "Interview",
-    "Interview Done":      "Interview",
     "Offer Received":      "Offer",
     "Rejected":            "Rejected",
     "Applied":             "Applied",
