@@ -114,6 +114,27 @@ function emailCategoryToStatus(category) {
   return map[category] || "Applied";
 }
 
+// Extracts readable plain-text body from a Gmail message returned by format=full.
+// Walks the MIME tree preferring text/plain, falls back to text/html stripped of tags.
+// Returns at most maxLen characters so AI prompts stay concise.
+function extractEmailBody(payload, maxLen = 800) {
+  function decode(b64url) {
+    try { return atob(b64url.replace(/-/g, "+").replace(/_/g, "/")); } catch { return ""; }
+  }
+  function walkPart(part, prefer) {
+    if (!part) return "";
+    if (part.mimeType === prefer && part.body?.data) return decode(part.body.data);
+    if (part.parts) { for (const p of part.parts) { const t = walkPart(p, prefer); if (t) return t; } }
+    return "";
+  }
+  let text = walkPart(payload, "text/plain");
+  if (!text) {
+    const html = walkPart(payload, "text/html");
+    text = html.replace(/<[^>]+>/g, " ").replace(/&nbsp;/g, " ").replace(/&amp;/g, "&");
+  }
+  return text.replace(/\s+/g, " ").trim().substring(0, maxLen);
+}
+
 function calcMatchScore(jobSkills, profileSkills) {
   if (!jobSkills || !profileSkills) return 0;
   const jSkills = jobSkills.toLowerCase().split(/[,\s]+/).filter(s => s.length > 2);
@@ -2754,14 +2775,15 @@ Format: Professional letter. Opening hook, relevant experience paragraph, strong
       }
 
       const details = await Promise.allSettled(
-        allMessages.slice(0, 40).map(msg =>
+        allMessages.slice(0, 60).map(msg =>
           fetch(
-            `https://gmail.googleapis.com/gmail/v1/users/me/messages/${msg.id}?format=metadata&metadataHeaders=Subject&metadataHeaders=From&metadataHeaders=Date`,
+            `https://gmail.googleapis.com/gmail/v1/users/me/messages/${msg.id}?format=full`,
             { headers: { Authorization: `Bearer ${token}` } }
           ).then(r => r.json()).then(data => {
             const hdrs = data.payload?.headers || [];
             const get = n => hdrs.find(h => h.name === n)?.value || "";
-            return { id: msg.id, subject: get("Subject"), from: get("From"), date: get("Date"), snippet: data.snippet || "", category: msg.category, fromAccount: msg.fromAccount };
+            const body = extractEmailBody(data.payload);
+            return { id: msg.id, subject: get("Subject"), from: get("From"), date: get("Date"), snippet: data.snippet || "", body, category: msg.category, fromAccount: msg.fromAccount };
           }).catch(() => null)
         )
       );
@@ -2828,10 +2850,34 @@ Format: Professional letter. Opening hook, relevant experience paragraph, strong
 
     try {
       const text = await AI(
-        `Analyze these job emails from Gmail. Return ONLY a JSON array. Each object must have these keys: company, jobTitle, status (one of: Applied|Screening|Interview Scheduled|Interview Done|Offer Received|Rejected|Pending), interviewDate, interviewTime, interviewType, sender, date, snippet, subject, fromAccount.
+        `You are analyzing job-related emails from a candidate's Gmail. Each email includes subject, from, snippet, body (up to 800 chars of actual email content), and a pre-detected category hint.
+
+Classify each email into exactly one status using these rules:
+- "Applied": Confirmation the application was received or submitted (no interview scheduled yet). Keywords: "application received", "thank you for applying", "we've received your resume".
+- "Screening": A recruiter reached out, or there is an invite/link for a phone screen, online test, coding challenge, or aptitude test. Keywords: recruiter, phone screen, hackerrank, codility, assessment, online test.
+- "Interview Scheduled": An interview has been confirmed with a specific date/time/link. Keywords: "interview scheduled", "interview confirmed", "calendar invite", "zoom link", "meet at", "your interview is on".
+- "Interview Done": Post-interview follow-up or feedback/thank-you after the interview has already taken place. Keywords: "thank you for interviewing", "it was a pleasure speaking", "next steps after our interview".
+- "Offer Received": A job offer, offer letter, CTC/salary details, or appointment letter. Keywords: "offer letter", "pleased to offer", "compensation", "ctc", "appointment letter", "joining date", "onboarding".
+- "Rejected": A decline or rejection email. Keywords: "unfortunately", "not moving forward", "not selected", "we regret", "other candidates", "position has been filled", "not shortlisted".
+- "Pending": Cannot clearly determine status from the content — general updates, "we'll be in touch", or ambiguous follow-ups.
+
+Extract these fields for each email:
+- company: sender's company name (from "from" field or email body)
+- jobTitle: job role or position title mentioned in subject/body
+- status: one of the 7 statuses above
+- interviewDate: ISO date (YYYY-MM-DD) if mentioned, else ""
+- interviewTime: time string if mentioned, else ""
+- interviewType: "Phone" | "Video" | "In-person" | "Technical" | "" based on context
+- sender: the "from" value
+- date: email date as-is
+- snippet: the snippet value
+- subject: the subject value
+- fromAccount: the fromAccount value
+
+Return ONLY a valid JSON array with one object per email. No markdown, no explanation.
 
 Emails:
-${JSON.stringify(deduped.slice(0, 30))}`,
+${JSON.stringify(deduped)}`,
         "Return only a valid JSON array, no markdown, no extra text."
       );
       const match = text.replace(/```json|```/g, "").trim().match(/\[[\s\S]*\]/);
@@ -2872,7 +2918,7 @@ ${JSON.stringify(deduped.slice(0, 30))}`,
       setGmailEmails(deduped.map(e => ({
         company: e.from?.match(/^"?([^"<@]+)/)?.[1]?.trim() || "Unknown",
         jobTitle: e.subject || "Position",
-        status: e.category || "Applied",
+        status: emailCategoryToStatus(e.category),
         sender: e.from,
         date: e.date,
         snippet: e.snippet,
@@ -2946,16 +2992,17 @@ ${JSON.stringify(deduped.slice(0, 30))}`,
 
       setGmailStatus({ msg: `Reading ${Math.min(allMessages.length, 60)} emails…`, type: "loading" });
 
-      // Fetch details for top 60 emails (subject, sender, date, snippet)
+      // Fetch full email content (format=full) so AI gets body text, not just a 100-char snippet
       const details = await Promise.allSettled(
         allMessages.slice(0, 60).map(msg =>
           fetch(
-            `https://gmail.googleapis.com/gmail/v1/users/me/messages/${msg.id}?format=metadata&metadataHeaders=Subject&metadataHeaders=From&metadataHeaders=Date`,
+            `https://gmail.googleapis.com/gmail/v1/users/me/messages/${msg.id}?format=full`,
             { headers: { Authorization: `Bearer ${token}` } }
           ).then(r => r.json()).then(data => {
             const hdrs = data.payload?.headers || [];
             const get = n => hdrs.find(h => h.name === n)?.value || "";
-            return { subject: get("Subject"), sender: get("From"), date: get("Date"), snippet: data.snippet || "", category: msg.category };
+            const body = extractEmailBody(data.payload);
+            return { subject: get("Subject"), sender: get("From"), date: get("Date"), snippet: data.snippet || "", body, category: msg.category };
           }).catch(() => null)
         )
       );
@@ -2969,9 +3016,32 @@ ${JSON.stringify(deduped.slice(0, 30))}`,
 
       setGmailStatus({ msg: `Analyzing ${payload.length} emails with AI…`, type: "loading" });
 
-      // Pass per-category hints to AI so it has context beyond just subject keywords
       const text = await AI(
-        `Analyze these job-related emails from Gmail. Each email has a pre-detected "category" hint. Return ONLY a valid JSON array. Each object must have: company, jobTitle, status (one of: Applied|Screening|Interview Scheduled|Interview Done|Offer Received|Rejected|Pending), interviewDate, interviewTime, interviewType, sender, date, snippet, subject, category.
+        `You are analyzing job-related emails from a candidate's Gmail. Each email includes subject, sender, snippet, body (up to 800 chars of actual email content), and a pre-detected category hint.
+
+Classify each email into exactly one status using these rules:
+- "Applied": Confirmation the application was received or submitted (no interview scheduled yet). Keywords: "application received", "thank you for applying", "we've received your resume".
+- "Screening": A recruiter reached out, or there is an invite/link for a phone screen, online test, coding challenge, or aptitude test. Keywords: recruiter, phone screen, hackerrank, codility, assessment, online test.
+- "Interview Scheduled": An interview has been confirmed with a specific date/time/link. Keywords: "interview scheduled", "interview confirmed", "calendar invite", "zoom link", "meet at", "your interview is on".
+- "Interview Done": Post-interview follow-up or feedback/thank-you after the interview has already taken place. Keywords: "thank you for interviewing", "it was a pleasure speaking", "next steps after our interview".
+- "Offer Received": A job offer, offer letter, CTC/salary details, or appointment letter. Keywords: "offer letter", "pleased to offer", "compensation", "ctc", "appointment letter", "joining date", "onboarding".
+- "Rejected": A decline or rejection email. Keywords: "unfortunately", "not moving forward", "not selected", "we regret", "other candidates", "position has been filled", "not shortlisted".
+- "Pending": Cannot clearly determine status from the content — general updates, "we'll be in touch", or ambiguous follow-ups.
+
+Extract these fields for each email:
+- company: sender's company name (from "sender" field or email body)
+- jobTitle: job role or position title mentioned in subject/body
+- status: one of the 7 statuses above
+- interviewDate: ISO date (YYYY-MM-DD) if mentioned, else ""
+- interviewTime: time string if mentioned, else ""
+- interviewType: "Phone" | "Video" | "In-person" | "Technical" | "" based on context
+- sender: the "sender" value
+- date: the "date" value
+- snippet: the "snippet" value
+- subject: the "subject" value
+- category: the "category" value
+
+Return ONLY a valid JSON array with one object per email. No markdown, no explanation.
 
 Emails:
 ${JSON.stringify(payload)}`,
