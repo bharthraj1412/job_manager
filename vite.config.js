@@ -12,8 +12,8 @@ export default defineConfig(({ mode }) => {
           target: 'https://integrate.api.nvidia.com',
           changeOrigin: true,
           rewrite: () => '/v1/chat/completions',
-          configure: (proxy, options) => {
-            proxy.on('proxyReq', (proxyReq, req, res) => {
+          configure: (proxy) => {
+            proxy.on('proxyReq', (proxyReq) => {
               if (env.NVIDIA_API_KEY) {
                 proxyReq.setHeader('Authorization', `Bearer ${env.NVIDIA_API_KEY}`);
               } else {

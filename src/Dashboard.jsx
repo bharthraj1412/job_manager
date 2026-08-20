@@ -2,7 +2,8 @@ import { useState, useRef, useEffect, useCallback } from "react";
 import { supabase } from "./supabase";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, PieChart, Pie, Cell } from "recharts";
 import * as XLSX from "xlsx";
-import ResumeBuilder, { cleanAI } from './ResumeBuilder';
+import ResumeBuilder from './ResumeBuilder';
+import { cleanAI } from './utils/cleanAI';
 import Calendar from './Calendar';
 
 // ── Constants ──────────────────────────────────────────────────────────────
@@ -159,7 +160,7 @@ function cleanPrepOutput(raw) {
     .replace(/\*\*(.+?)\*\*/gs, '$1')       // **bold**
     .replace(/\*(.+?)\*/gs, '$1')           // *italic*
     .replace(/_{1,2}(.+?)_{1,2}/gs, '$1')     // __under__
-    .replace(/\`{1,3}([^\`]+)\`{1,3}/g, '$1') // `code`
+    .replace(/`{1,3}([^`]+)`{1,3}/g, '$1') // `code`
     .replace(/\[(.+?)\]\(.+?\)/g, '$1')     // [link](url)
     .replace(/<br\s*\/?>/gi, ' ')            // <br>
     .replace(/&nbsp;/g, ' ')
@@ -343,7 +344,9 @@ async function getGoogleToken(scope, session, clientId) {
       const { token, exp } = JSON.parse(cached);
       if (token && Date.now() < exp) return token;
     }
-  } catch { }
+  } catch {
+    // Ignore malformed or expired session cache and request a fresh token.
+  }
 
   // 2. Request via GIS — shows "JobBoard Pro wants to access your Gmail" etc.
   //    This only pops up once per scope-set per session (55-min cache).
@@ -362,7 +365,9 @@ async function getGoogleToken(scope, session, clientId) {
             token: r.access_token,
             exp: Date.now() + 3300000, // 55 min
           }));
-        } catch { }
+        } catch {
+          // Session storage can be unavailable in privacy-restricted browsers.
+        }
         resolve(r.access_token);
       },
     });
@@ -603,7 +608,7 @@ function buildJobDigestHTML(results, searchDate, profileName, keywords) {
   const topJobs = results.slice(0, 40);
   const byScore = [...topJobs].sort((a, b) => (b.matchScore || 0) - (a.matchScore || 0));
 
-  const jobRows = topJobs.map((r, i) => `
+  const jobRows = topJobs.map(r => `
     <tr style="border-bottom:1px solid #0f1c2e;">
       <td style="padding:10px 12px;color:#e2e8f0;font-weight:600;font-size:13px;">
         ${r.applylink ? `<a href="${r.applylink}" style="color:#60a5fa;text-decoration:none;">${r.title}</a>` : r.title}
@@ -1169,7 +1174,6 @@ const MatchBadge = ({ score }) => {
 // ── ScannerEmailRow: single email recipient with verification ───────────────
 const ScannerEmailRow = ({ entry, onUpdate, onRemove, onSendCode, onConfirm, isSending }) => {
   const [codeInput, setCodeInput] = useState("");
-  const statusColor = entry.status === "verified" ? "#22c55e" : entry.status === "code_sent" ? "#f59e0b" : "#64748b";
   const statusIcon  = entry.status === "verified" ? "✅" : entry.status === "code_sent" ? "📨" : "○";
   const statusLabel = entry.status === "verified" ? "Verified" : entry.status === "code_sent" ? "Code sent" : "Unverified";
 
@@ -1296,8 +1300,8 @@ export default function Dashboard({ session }) {
   const [adzunaId,  setAdzunaId]  = useState(() => localStorage.getItem('adzunaId')  || import.meta.env.VITE_ADZUNA_ID  || '');
   const [adzunaKey, setAdzunaKey] = useState(() => localStorage.getItem('adzunaKey') || import.meta.env.VITE_ADZUNA_KEY || '');
   // ── Notion state ─────────────────────────────────────────────────────
-  const [sheetsSpreadsheetId,   setSheetsSpreadsheetId]   = useState(() => localStorage.getItem("sheetsSpreadsheetId") || "");
-  const [sheetsEnabled,    setSheetsEnabled]    = useState(() => localStorage.getItem("sheetsEnabled") === "true");
+  const [notionToken, setNotionToken] = useState(() => localStorage.getItem("notionToken") || "");
+  const [notionDbId, setNotionDbId] = useState(() => localStorage.getItem("notionDbId") || "");
   const [sheetsSyncing, setSheetsSyncing] = useState(false);
   const [reportEmail, setReportEmail] = useState(() => localStorage.getItem("reportEmail") || session?.user?.email || "");
   // Multi-email scanner recipients
@@ -1389,16 +1393,11 @@ export default function Dashboard({ session }) {
   const [salaryLoading, setSalaryLoading] = useState(false);
 
   const [sq, setSq] = useState(""); const [sr, setSr] = useState([]); const [sLoad, setSLoad] = useState(false); const [sErr, setSErr] = useState("");
-  // Advanced search state
-  const [aiRanking, setAiRanking] = useState(false);
-  const [aiExpandLoading, setAiExpandLoading] = useState(false);
-  const [searchInsights, setSearchInsights] = useState(null);  // { topSkills, salaryRange, topCompanies }
-  const [resultsFetched, setResultsFetched] = useState(0);     // total pages fetched so far
-  const [searchSessionId, setSearchSessionId] = useState(0);   // to cancel stale fetches
+  const [aiRanking] = useState(false);
+  const [searchInsights] = useState(null);
   const [sPage, setSPage] = useState(1); const [sTotalResults, setSTotalResults] = useState(0);
   const [sLocation, setSLocation] = useState(""); const [sJobType, setSJobType] = useState("all");
   const [sSalaryMin, setSSalaryMin] = useState(""); const [sCategory, setSCategory] = useState(""); const [sExperience, setSExperience] = useState("");
-  const [showFilters, setShowFilters] = useState(false);
   const [savedSearches, setSavedSearches] = useState(() => { try { return JSON.parse(localStorage.getItem("savedSearches") || "[]"); } catch { return []; } });
 
   // ── AI ──
@@ -1422,6 +1421,8 @@ export default function Dashboard({ session }) {
   const AI = useCallback((prompt, sys = "") => callAI(prompt, sys, geminiKey, aiModel, proxyUrl), [geminiKey, aiModel, proxyUrl]);
 
   // ── Init ──────────────────────────────────────────────────────────────
+  // These callbacks are intentionally invoked once per authenticated session.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { fetchJobs(); loadProfile(); }, [session]);
 
   // Clear selection when tab or filters change so stale ids don't linger
@@ -1590,7 +1591,7 @@ export default function Dashboard({ session }) {
       const htmlBody = buildReportHTML(jobs, reportDate, profile.full_name || session.user.email);
       const subject = `📊 JobBoard Pro Daily Report — ${reportDate}`;
 
-      await sendEmailViaGmail(reportEmail, subject, htmlBody, token);
+      await Promise.all(targets.map(email => sendEmailViaGmail(email, subject, htmlBody, token)));
 
       if (reportFormat === "excel" || reportFormat === "both") {
         const { wb, filename } = generateBeautifulExcel(jobs);
@@ -1617,7 +1618,7 @@ export default function Dashboard({ session }) {
   // ── Profile CRUD ──────────────────────────────────────────────────────
   // FIX: use maybeSingle() — .single() throws when no profile row exists yet
   async function loadProfile() {
-    const { data, error } = await supabase.from("profiles").select("*").eq("id", session.user.id).maybeSingle();
+    const { data } = await supabase.from("profiles").select("*").eq("id", session.user.id).maybeSingle();
     if (data) {
       let projects=[];
       try{ projects=data.projects?JSON.parse(data.projects):[]; }catch{ projects=[]; }
@@ -1877,10 +1878,10 @@ ${resumeText.slice(0, 8000)}`,
     localStorage.setItem("jobSearchResultCount", jobSearchResultCount);
     localStorage.setItem("jobSearchFormat", jobSearchFormat);
     localStorage.setItem("reportFormat", reportFormat);
-    localStorage.setItem("sheetsSpreadsheetId",   sheetsSpreadsheetId);
-    localStorage.setItem("sheetsEnabled",    sheetsEnabled);
+    localStorage.setItem("notionToken",   notionToken);
+    localStorage.setItem("notionDbId",    notionDbId);
     // Clear ALL cached Google tokens so new clientId / scopes take effect
-    try { Object.keys(sessionStorage).filter(k => k.startsWith("gtoken_")).forEach(k => sessionStorage.removeItem(k)); } catch { }
+    try { Object.keys(sessionStorage).filter(k => k.startsWith("gtoken_")).forEach(k => sessionStorage.removeItem(k)); } catch { /* Ignore unavailable or restricted session storage. */ }
     notify("Settings saved ✓");
     setShowSettings(false);
   }
@@ -2105,9 +2106,8 @@ ${aiExtractNotes.slice(0,5000)}`,
   }
 
   // ── Notion Sync ──────────────────────────────────────────────────────────
-  async function syncToGoogleSheets(jobsToSync) {
-    if (!clientId) return notify("Add Google Client ID in ⚙️ Settings", "err");
-    // sheetsEnabled check removed - Google Sheets needs no config in ⚙️ Settings", "err");
+  async function syncToNotion(jobsToSync) {
+    if (!notionToken || !notionDbId) return notify("Add the Notion integration token and database ID in ⚙️ Settings", "err");
     const toSync = jobsToSync || jobs;
     if (!toSync.length) return notify("No jobs to sync", "err");
     setSheetsSyncing(true);
@@ -2118,8 +2118,8 @@ ${aiExtractNotes.slice(0,5000)}`,
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           action: "sync_jobs",
-          token: sheetsSpreadsheetId,
-          database_id: sheetsEnabled,
+          token: notionToken,
+          database_id: notionDbId,
           jobs: toSync.map(j => ({
             id: j.id,
             title: j.title,
@@ -2243,7 +2243,6 @@ ${aiExtractNotes.slice(0,5000)}`,
 
       for (const email of emails) {
         const fromDomain = email.from.match(/@([a-zA-Z0-9.-]+)/)?.[1] || "";
-        const subjectLow = email.subject.toLowerCase();
 
         // Try to match to existing job
         const matchedJob = jobs.find(j => {
@@ -2604,7 +2603,7 @@ Format: Professional letter. Opening hook, relevant experience paragraph, strong
         sessionStorage.setItem(`gtoken_acct_${email}`, JSON.stringify({
           token, exp: Date.now() + 3300000,
         }));
-      } catch { }
+      } catch { /* Ignore unavailable or restricted session storage. */ }
 
       const newAccount = {
         id: Date.now(), email,
@@ -2627,7 +2626,7 @@ Format: Professional letter. Opening hook, relevant experience paragraph, strong
   function removeGmailAccount(id) {
     const account = gmailAccounts.find(a => a.id === id);
     if (account) {
-      try { sessionStorage.removeItem(`gtoken_acct_${account.email}`); } catch { }
+      try { sessionStorage.removeItem(`gtoken_acct_${account.email}`); } catch { /* Ignore unavailable or restricted session storage. */ }
     }
     const updated = gmailAccounts.filter(a => a.id !== id);
     setGmailAccounts(updated);
@@ -2655,7 +2654,7 @@ Format: Professional letter. Opening hook, relevant experience paragraph, strong
           sessionStorage.removeItem(`gtoken_acct_${account.email}`);
         }
       }
-    } catch { }
+    } catch { /* Ignore unavailable or restricted session storage. */ }
 
     // Step 2: If no cached token, request a fresh one via GIS
     // login_hint=email means Google will silently use that account if it has an active session
@@ -2674,7 +2673,7 @@ Format: Professional letter. Opening hook, relevant experience paragraph, strong
                 sessionStorage.setItem(`gtoken_acct_${account.email}`, JSON.stringify({
                   token: r.access_token, exp: Date.now() + 3300000,
                 }));
-              } catch { }
+              } catch { /* Ignore unavailable or restricted session storage. */ }
               resolve(r.access_token);
             },
           });
@@ -2706,7 +2705,7 @@ Format: Professional letter. Opening hook, relevant experience paragraph, strong
           ).then(async r => {
             if (r.status === 401) {
               // Token expired mid-scan — clear cache
-              try { sessionStorage.removeItem(`gtoken_acct_${account.email}`); } catch { }
+              try { sessionStorage.removeItem(`gtoken_acct_${account.email}`); } catch { /* Ignore unavailable or restricted session storage. */ }
               throw new Error("Token expired");
             }
             const d = await r.json();
@@ -2841,7 +2840,7 @@ ${JSON.stringify(deduped.slice(0, 30))}`,
       } else {
         setGmailStatus({ msg: "✓ Scan complete — no structured job emails found.", type: "success" });
       }
-    } catch (aiErr) {
+    } catch {
       // AI failed but we still have raw emails — show them without AI parsing
       setGmailEmails(deduped.map(e => ({
         company: e.from?.match(/^"?([^"<@]+)/)?.[1]?.trim() || "Unknown",
@@ -3006,7 +3005,6 @@ ${JSON.stringify(deduped.slice(0, 30))}`,
   const soonDue = jobs.filter(j => j.deadline && daysDiff(j.deadline) >= 0 && daysDiff(j.deadline) <= 7 && !["Rejected", "Withdrawn", "Offer"].includes(j.status)).length;
   const filteredGmail = gmailEmails.filter(e => gmailFilter === "all" || e.status === gmailFilter);
   const needFollowup=jobs.filter(j=>j.status==="Applied"&&j.applieddate&&Math.abs(daysDiff(j.applieddate))>=7).length;
-  const activeFilters = [sLocation, sJobType !== "all" ? sJobType : "", sSalaryMin, sCategory, sExperience].filter(Boolean).length;
   const profileComplete = [profile.full_name, profile.skills, profile.headline].filter(Boolean).length;
 
   // ── RENDER ────────────────────────────────────────────────────────────
@@ -3066,8 +3064,8 @@ ${JSON.stringify(deduped.slice(0, 30))}`,
               🔍 Find Jobs
               {sr.length > 0 && <span style={{ background: "#06b6d4", color: "#fff", borderRadius: 999, padding: "1px 5px", fontSize: 9, fontWeight: 700, marginLeft: 2 }}>{sr.length}</span>}
             </Btn>
-            {sheetsSpreadsheetId && sheetsEnabled && (
-              <Btn onClick={() => syncToGoogleSheets()} disabled={sheetsSyncing} v="vio" sx={{ fontSize: 11, padding: "7px 12px" }}>
+            {notionToken && notionDbId && (
+              <Btn onClick={() => syncToNotion()} disabled={sheetsSyncing} v="vio" sx={{ fontSize: 11, padding: "7px 12px" }}>
                 {sheetsSyncing ? <><span style={{ animation: "spin 0.8s linear infinite", display: "inline-block" }}>◌</span> Syncing…</> : "📝 Notion"}
               </Btn>
             )}

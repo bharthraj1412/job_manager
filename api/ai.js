@@ -5,19 +5,12 @@ const RATE_LIMIT_WINDOW = 60 * 1000; // 1 minute
 const RATE_LIMIT_MAX = 20;
 const ipTimestamps = {};
 
-function isOriginAllowed(origin) {
-  return true; // As requested, allow ANY origin freely
-}
-
 export default async function handler(req, res) {
   const origin = req.headers.origin || '';
 
   // ── CORS ────────────────────────────────────────────────────────────
-  if (!isOriginAllowed(origin)) {
-    return res.status(403).json({ error: 'Forbidden origin: ' + origin });
-  }
+  // Reflect the caller origin; this endpoint does not set cookies.
 
-  // Reflect the actual origin back (not wildcard) so cookies/auth work
   res.setHeader('Access-Control-Allow-Origin', origin || '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');

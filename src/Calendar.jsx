@@ -57,8 +57,6 @@ export default function Calendar({ jobs, session, notify }) {
   const today = todayStr();
 
   // ── Load custom events from Supabase ─────────────────────────────────────
-  useEffect(() => { loadEvents(); }, [session]);
-
   async function loadEvents() {
     setLoading(true);
     const { data } = await supabase
@@ -68,6 +66,11 @@ export default function Calendar({ jobs, session, notify }) {
     if (data) setCustomEvents(data);
     setLoading(false);
   }
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => { void loadEvents(); }, 0);
+    return () => window.clearTimeout(timer);
+  }, [session]);
 
   async function saveEvent() {
     if (!newEvent.title.trim() || !newEvent.event_date) return notify('Title and date are required', 'err');
@@ -184,7 +187,7 @@ export default function Calendar({ jobs, session, notify }) {
   };
 
   // ── Agenda view data ──────────────────────────────────────────────────────
-  const agendaDays = useMemo(() => {
+  const agendaDays = (() => {
     const result = [];
     const d = new Date(year, month, 1);
     const end = new Date(year, month + 1, 0);
@@ -194,7 +197,7 @@ export default function Calendar({ jobs, session, notify }) {
       d.setDate(d.getDate() + 1);
     }
     return result;
-  }, [allEvents, year, month]);
+  })();
 
   // ── Styles ────────────────────────────────────────────────────────────────
   const card = { background: '#06101e', border: '1px solid #1e2d45', borderRadius: 14, padding: 20 };

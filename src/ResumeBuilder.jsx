@@ -2,20 +2,7 @@
 // A4 preview · Black professional template · Editable skill chips · Projects · ATS checker
 
 import { useState, useRef } from 'react';
-
-export function cleanAI(text) {
-  if (!text) return '';
-  return text
-    .replace(/#{1,6}\s+/g, '')
-    .replace(/\*\*(.+?)\*\*/gs, '$1')
-    .replace(/\*(.+?)\*/gs, '$1')
-    .replace(/^[\t ]*[-*+]\s+/gm, '• ')
-    .replace(/\[(.+?)\]\(.+?\)/g, '$1')
-    .replace(/`{1,3}([^`]+)`{1,3}/g, '$1')
-    .replace(/_{1,2}(.+?)_{1,2}/gs, '$1')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim();
-}
+import { cleanAI } from './utils/cleanAI';
 
 function SkillChips({ value, onChange, placeholder = 'Type skill + Enter…' }) {
   const [input, setInput] = useState('');
@@ -46,6 +33,24 @@ function SkillChips({ value, onChange, placeholder = 'Type skill + Enter…' }) 
       <input ref={inputRef} value={input} onChange={e => setInput(e.target.value)} onKeyDown={handleKey} onPaste={handlePaste} onBlur={() => input.trim() && addSkill(input)} placeholder={skills.length === 0 ? placeholder : ''} style={{ background:'none',border:'none',outline:'none',color:'#e2e8f0',fontSize:12,fontFamily:'inherit',flex:1,minWidth:120 }} />
       {skills.length > 0 && <span style={{ fontSize:10,color:'#334155',marginLeft:'auto' }}>{skills.length} skills</span>}
     </div>
+  );
+}
+
+function Btn({ children, onClick, style = {}, disabled = false }) {
+  return (
+    <button onClick={onClick} disabled={disabled}
+      style={{ background:'#0d1526', border:'1px solid #1e2d45', color:'#94a3b8', borderRadius:8, padding:'8px 14px', fontSize:12, fontWeight:600, cursor:disabled?'not-allowed':'pointer', display:'inline-flex', alignItems:'center', gap:6, fontFamily:'inherit', transition:'all .15s', opacity:disabled?.5:1, ...style }}>
+      {children}
+    </button>
+  );
+}
+
+function AIBtn({ field, prompt, label, generateField, generating, genField }) {
+  return (
+    <button onClick={() => generateField(field, prompt)} disabled={generating}
+      style={{ background:'linear-gradient(135deg,#4c1d95,#5b21b6)', border:'1px solid rgba(139,92,246,0.4)', color:'#c4b5fd', borderRadius:7, padding:'3px 9px', fontSize:10, cursor:generating?'not-allowed':'pointer', display:'inline-flex', alignItems:'center', gap:4, fontFamily:'inherit', opacity:generating?.5:1, marginLeft:6 }}>
+      {generating && genField===field ? <span style={{ animation:'spin 0.8s linear infinite', display:'inline-block' }}>◌</span> : '✨'} {label||'AI'}
+    </button>
   );
 }
 
@@ -359,19 +364,6 @@ export default function ResumeBuilder({ profile = {}, onSaveProfile, callAI, not
     spin: { animation:'spin 0.8s linear infinite', display:'inline-block' },
   };
 
-  const Btn = ({ children, onClick, style={}, disabled }) => (
-    <button onClick={onClick} disabled={disabled}
-      style={{ background:'#0d1526', border:'1px solid #1e2d45', color:'#94a3b8', borderRadius:8, padding:'8px 14px', fontSize:12, fontWeight:600, cursor:disabled?'not-allowed':'pointer', display:'inline-flex', alignItems:'center', gap:6, fontFamily:'inherit', transition:'all .15s', opacity:disabled?.5:1, ...style }}>
-      {children}
-    </button>
-  );
-
-  const AIBtn = ({ field, prompt, label }) => (
-    <button onClick={() => generateField(field, prompt)} disabled={generating}
-      style={{ background:'linear-gradient(135deg,#4c1d95,#5b21b6)', border:'1px solid rgba(139,92,246,0.4)', color:'#c4b5fd', borderRadius:7, padding:'3px 9px', fontSize:10, cursor:generating?'not-allowed':'pointer', display:'inline-flex', alignItems:'center', gap:4, fontFamily:'inherit', opacity:generating?.5:1, marginLeft:6 }}>
-      {generating && genField===field ? <span style={S.spin}>◌</span> : '✨'} {label||'AI'}
-    </button>
-  );
 
   return (
     <div style={{ fontFamily:"'DM Sans',sans-serif" }}>
@@ -477,7 +469,7 @@ export default function ResumeBuilder({ profile = {}, onSaveProfile, callAI, not
               <div style={{ color:'#a78bfa', fontSize:11, fontWeight:700, letterSpacing:'0.08em', textTransform:'uppercase', marginBottom:14 }}>Professional Content</div>
 
               <div>
-                <label style={S.lbl}><span>Professional Summary</span><AIBtn field="summary" label="Generate" prompt="Write a powerful 3-sentence professional summary: expertise, key skills, career goal. Plain text, no markdown." /></label>
+                <label style={S.lbl}><span>Professional Summary</span><AIBtn field="summary" label="Generate" prompt="Write a powerful 3-sentence professional summary: expertise, key skills, career goal. Plain text, no markdown." generateField={generateField} generating={generating} genField={genField} /></label>
                 <textarea value={data.summary||''} onChange={e=>upd('summary',e.target.value)} rows={4} style={S.ta} placeholder="A results-driven engineer with…" />
               </div>
 
@@ -485,7 +477,7 @@ export default function ResumeBuilder({ profile = {}, onSaveProfile, callAI, not
                 <label style={S.lbl}>
                   <span>Skills (type + Enter to add)</span>
                   <div style={{ display:'flex', gap:4 }}>
-                    <AIBtn field="skills" label="Enhance" prompt="Return comma-separated relevant technical and soft skills for the candidate's role. Plain text only." />
+                    <AIBtn field="skills" label="Enhance" prompt="Return comma-separated relevant technical and soft skills for the candidate's role. Plain text only." generateField={generateField} generating={generating} genField={genField} />
                     {data.skills && <button onClick={() => upd('skills','')} style={{ background:'rgba(220,38,38,.08)', border:'1px solid #450a0a', color:'#f87171', borderRadius:7, padding:'3px 9px', fontSize:10, cursor:'pointer', fontFamily:'inherit' }}>Clear</button>}
                   </div>
                 </label>
@@ -494,12 +486,12 @@ export default function ResumeBuilder({ profile = {}, onSaveProfile, callAI, not
               </div>
 
               <div>
-                <label style={S.lbl}><span>Experience</span><AIBtn field="experience" label="Enhance" prompt="Rewrite experience with powerful action verbs and quantified achievements. Bullet points as '• '. No markdown." /></label>
+                <label style={S.lbl}><span>Experience</span><AIBtn field="experience" label="Enhance" prompt="Rewrite experience with powerful action verbs and quantified achievements. Bullet points as '• '. No markdown." generateField={generateField} generating={generating} genField={genField} /></label>
                 <textarea value={data.experience||''} onChange={e=>upd('experience',e.target.value)} rows={6} style={S.ta} placeholder="Software Engineer @ Company (2023–2025)&#10;• Led development of X, improving Y by 40%&#10;• Built Z using React and Python" />
               </div>
 
               <div>
-                <label style={S.lbl}><span>Education</span><AIBtn field="education" label="Format" prompt="Format education professionally: degree, institution, year, coursework. Plain text." /></label>
+                <label style={S.lbl}><span>Education</span><AIBtn field="education" label="Format" prompt="Format education professionally: degree, institution, year, coursework. Plain text." generateField={generateField} generating={generating} genField={genField} /></label>
                 <textarea value={data.education||''} onChange={e=>upd('education',e.target.value)} rows={3} style={S.ta} placeholder="B.E. Computer Science — XYZ University (2022–2026)&#10;CGPA: 8.5 | Relevant: DSA, ML, DBMS" />
               </div>
 
